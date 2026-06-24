@@ -89,7 +89,7 @@ def decode_single(latents: torch.Tensor, vae) -> torch.Tensor:
 # ---------- Transformer step ----------
 
 def flow_step_single(model_input: torch.Tensor, transformer, vae_config: dict,
-                     vae_dtype, embeds_dict: dict, compute_dtype=torch.float16) -> torch.Tensor:
+                     vae_dtype, embeds_dict: dict) -> torch.Tensor:
     """Run single flow matching step with transformer."""
     model_input = model_input.to(next(transformer.parameters()).device)
 
@@ -108,24 +108,24 @@ def flow_step_single(model_input: torch.Tensor, transformer, vae_config: dict,
     B, C, H, W = model_input_4d.shape
     device = next(transformer.parameters()).device
 
-    prompt_embeds = _match_batch(prompt_embeds, B).to(device=device, dtype=compute_dtype)
-    prompt_mask = _match_batch(prompt_mask, B).to(device=device, dtype=torch.bool)
+    prompt_embeds = prompt_embeds[:B].to(device=device, dtype=torch.bfloat16)
+    prompt_mask = prompt_mask[:B].to(device=device, dtype=torch.bool)
 
     packed_model_input = QwenImageEditPipeline._pack_latents(
         model_input_4d, batch_size=B, num_channels_latents=C, height=H, width=W,
     )
-    packed_model_input = packed_model_input.to(device=device, dtype=compute_dtype)
+    packed_model_input = packed_model_input.to(torch.bfloat16)
 
-    timestep = torch.full((B,), 499.0 / 1000.0, device=device, dtype=compute_dtype)
+    timestep = torch.full((B,), 499.0 / 1000.0, device=device, dtype=torch.bfloat16)
 
     h_img = H // 2
     w_img = W // 2
     img_shapes = [[(1, h_img, w_img)]] * B
-    txt_seq_lens = prompt_mask.sum(dim=1).tolist() if prompt_mask is not None else None
+    txt_seq_lens = prompt_mask.sum(dim=1).tolist()
 
     attention_kwargs = getattr(transformer, "attention_kwargs", None) or {}
 
-    with torch.amp.autocast("cuda", dtype=compute_dtype):
+    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
         model_pred = transformer(
             hidden_states=packed_model_input,
             timestep=timestep,
@@ -258,25 +258,6 @@ class WindowSeatEngine:
         self.processing_resolution: Optional[int] = None
         self.embeds_dict: Optional[dict] = None
         self._initialized = False
-        # T4 (compute capability 7.5) doesn't support bf16 compute well
-        if torch.cuda.is_available():
-            cc = torch.cuda.get_device_capability(0)
-            self._supports_bf16 = cc[0] >= 8  # Ampere+ (A100, etc.)
-        else:
-            self._supports_bf16 = False
-
-    @property
-    def _vae_dtype(self):
-        """float16 for T4/older GPUs, bfloat16 for Ampere+."""
-        return torch.bfloat16 if self._supports_bf16 else torch.float16
-
-    def _gpu_max_memory(self, reserve_gib: float = 2.5) -> dict:
-        """Return max_memory dict reserving space for activations."""
-        if not torch.cuda.is_available():
-            return {}
-        total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        usable = max(1.0, total - reserve_gib)
-        return {0: f"{usable:.1f}GiB", "cpu": "24GiB"}
 
     def initialize(self):
         """Download configs and text embeddings (lightweight, kept in memory)."""
@@ -336,10 +317,10 @@ class WindowSeatEngine:
             report("Loading VAE for encoding...", 0.05)
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
-                BASE_MODEL_URI, subfolder="vae", torch_dtype=self._vae_dtype,
-                low_cpu_mem_usage=True, use_safetensors=True,
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=self._vae_dtype)
+            vae.to(self.device, dtype=torch.bfloat16)
             vae.eval()
             vae_config = dict(vae.config)
             vae_dtype = vae.dtype
@@ -360,25 +341,21 @@ class WindowSeatEngine:
             # --- Phase 2: Transformer (flow step) ---
             report("Loading transformer...", 0.30)
             flush_cuda()
-            compute_dtype = torch.bfloat16 if self._supports_bf16 else torch.float16
             if params.use_4bit:
                 nf4 = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
                     llm_int8_skip_modules=["transformer_blocks.0.img_mod"],
                 )
                 transformer = QwenImageTransformer2DModel.from_pretrained(
-                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=compute_dtype,
-                    quantization_config=nf4, device_map="auto",
-                    max_memory=self._gpu_max_memory(reserve_gib=2.5),
-                    low_cpu_mem_usage=True,
+                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
+                    quantization_config=nf4, device_map=self.device,
                 )
             else:
                 transformer = QwenImageTransformer2DModel.from_pretrained(
-                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=compute_dtype,
-                    device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=2.5),
-                    low_cpu_mem_usage=True,
+                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
+                    device_map=self.device,
                 )
 
             # Load LoRA
@@ -398,7 +375,7 @@ class WindowSeatEngine:
             processed_tiles = []
             for i, latent in enumerate(encoded_tiles):
                 with torch.no_grad():
-                    output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict, compute_dtype)
+                    output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict)
                 processed_tiles.append(output_latent)
                 flush_cuda()
                 report(f"Transformer tile {i+1}/{len(tiles)}", 0.35 + 0.35 * (i + 1) / len(tiles))
@@ -411,10 +388,10 @@ class WindowSeatEngine:
             report("Loading VAE for decoding...", 0.70)
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
-                BASE_MODEL_URI, subfolder="vae", torch_dtype=self._vae_dtype,
-                low_cpu_mem_usage=True, use_safetensors=True,
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=self._vae_dtype)
+            vae.to(self.device, dtype=torch.bfloat16)
             vae.eval()
 
             decoded_tiles = []
