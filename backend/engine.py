@@ -315,15 +315,17 @@ class WindowSeatEngine:
         try:
             # --- Phase 1: Encode tiles with VAE ---
             report("Loading VAE for encoding...", 0.05)
+            print(f"[engine] Phase 1: Loading VAE (float32, no device_map)")
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
-                device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
+                low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=torch.float32)
+            vae = vae.to(self.device)
             vae.eval()
             vae_config = dict(vae.config)
             vae_dtype = vae.dtype
+            print(f"[engine] Phase 1: VAE loaded, dtype={vae_dtype}, device={next(vae.parameters()).device}")
 
             encoded_tiles = []
             for i, tile_info in enumerate(tiles):
@@ -337,6 +339,7 @@ class WindowSeatEngine:
             del vae
             vae = None
             flush_cuda()
+            print(f"[engine] Phase 1 DONE: {len(encoded_tiles)} tiles encoded")
 
             # --- Phase 2: Transformer (flow step) ---
             report("Loading transformer...", 0.30)
@@ -374,6 +377,7 @@ class WindowSeatEngine:
 
             processed_tiles = []
             for i, latent in enumerate(encoded_tiles):
+                print(f"[engine] Phase 2: Processing tile {i+1}/{len(encoded_tiles)}")
                 with torch.no_grad():
                     output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict)
                 processed_tiles.append(output_latent)
@@ -383,15 +387,17 @@ class WindowSeatEngine:
             del transformer
             transformer = None
             flush_cuda()
+            print(f"[engine] Phase 2 DONE: {len(processed_tiles)} tiles processed")
 
             # --- Phase 3: Decode tiles with VAE ---
             report("Loading VAE for decoding...", 0.70)
+            print("[engine] Phase 3: Loading VAE for decode (float32, no device_map)")
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
-                device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
+                low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=torch.float32)
+            vae = vae.to(self.device)
             vae.eval()
 
             decoded_tiles = []
