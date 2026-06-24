@@ -263,7 +263,7 @@ class WindowSeatEngine:
         """Return max_memory dict reserving space for activations."""
         if not torch.cuda.is_available():
             return {}
-        total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         usable = max(1.0, total - reserve_gib)
         return {0: f"{usable:.1f}GiB", "cpu": "24GiB"}
 
@@ -318,98 +318,112 @@ class WindowSeatEngine:
         tiles = compute_tiles(orig_W, orig_H, proc_res, params)
         report(f"Tiles: {len(tiles)}", 0.05)
 
-        # --- Phase 1: Encode tiles with VAE ---
-        report("Loading VAE for encoding...", 0.05)
-        flush_cuda()
-        vae = AutoencoderKLQwenImage.from_pretrained(
-            BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
-            device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
-            low_cpu_mem_usage=True, use_safetensors=True,
-        )
-        vae.eval()
-        vae_config = dict(vae.config)
-        vae_dtype = vae.dtype
-
-        encoded_tiles = []
-        for i, tile_info in enumerate(tiles):
-            tile_tensor = prepare_tile(img_path, tile_info, proc_res)
-            with torch.no_grad():
-                latent = encode_single(tile_tensor, vae)
-            encoded_tiles.append(latent)
+        vae = None
+        transformer = None
+        try:
+            # --- Phase 1: Encode tiles with VAE ---
+            report("Loading VAE for encoding...", 0.05)
             flush_cuda()
-            report(f"Encoding tile {i+1}/{len(tiles)}", 0.05 + 0.25 * (i + 1) / len(tiles))
-
-        del vae
-        flush_cuda()
-
-        # --- Phase 2: Transformer (flow step) ---
-        report("Loading transformer...", 0.30)
-        flush_cuda()
-        if params.use_4bit:
-            nf4 = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                llm_int8_skip_modules=["transformer_blocks.0.img_mod"],
+            vae = AutoencoderKLQwenImage.from_pretrained(
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
+                low_cpu_mem_usage=True, use_safetensors=True,
             )
-            transformer = QwenImageTransformer2DModel.from_pretrained(
-                BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
-                quantization_config=nf4, device_map="auto",
-                max_memory=self._gpu_max_memory(reserve_gib=2.5),
-                low_cpu_mem_usage=True,
-            )
-        else:
-            transformer = QwenImageTransformer2DModel.from_pretrained(
-                BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
-                device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=2.5),
-                low_cpu_mem_usage=True,
-            )
+            vae.eval()
+            vae_config = dict(vae.config)
+            vae_dtype = vae.dtype
 
-        # Load LoRA
-        lora_config = LoraConfig.from_pretrained(LORA_MODEL_URI, subfolder="transformer_lora")
-        transformer.add_adapter(lora_config)
-        state_dict = fetch_state_dict(LORA_MODEL_URI, "pytorch_lora_weights.safetensors", subfolder="transformer_lora")
-        missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
-        if unexpected:
-            raise ValueError(f"Unexpected keys in LoRA state dict: {unexpected}")
-        transformer.eval()
+            encoded_tiles = []
+            for i, tile_info in enumerate(tiles):
+                tile_tensor = prepare_tile(img_path, tile_info, proc_res)
+                with torch.no_grad():
+                    latent = encode_single(tile_tensor, vae)
+                encoded_tiles.append(latent)
+                flush_cuda()
+                report(f"Encoding tile {i+1}/{len(tiles)}", 0.05 + 0.25 * (i + 1) / len(tiles))
 
-        if torch.cuda.is_available():
-            alloc = torch.cuda.memory_allocated() / 1024**3
-            total = torch.cuda.get_device_properties(0).total_mem / 1024**3
-            report(f"Transformer loaded: {alloc:.2f}/{total:.2f} GiB VRAM", 0.33)
-
-        processed_tiles = []
-        for i, latent in enumerate(encoded_tiles):
-            with torch.no_grad():
-                output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict)
-            processed_tiles.append(output_latent)
+            del vae
+            vae = None
             flush_cuda()
-            report(f"Transformer tile {i+1}/{len(tiles)}", 0.35 + 0.35 * (i + 1) / len(tiles))
 
-        del transformer
-        flush_cuda()
-
-        # --- Phase 3: Decode tiles with VAE ---
-        report("Loading VAE for decoding...", 0.70)
-        flush_cuda()
-        vae = AutoencoderKLQwenImage.from_pretrained(
-            BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
-            device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
-            low_cpu_mem_usage=True, use_safetensors=True,
-        )
-        vae.eval()
-
-        decoded_tiles = []
-        for i, latent in enumerate(processed_tiles):
-            with torch.no_grad():
-                decoded = decode_single(latent, vae)
-            decoded_tiles.append(decoded)
+            # --- Phase 2: Transformer (flow step) ---
+            report("Loading transformer...", 0.30)
             flush_cuda()
-            report(f"Decoding tile {i+1}/{len(tiles)}", 0.70 + 0.20 * (i + 1) / len(tiles))
+            if params.use_4bit:
+                nf4 = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    llm_int8_skip_modules=["transformer_blocks.0.img_mod"],
+                )
+                transformer = QwenImageTransformer2DModel.from_pretrained(
+                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
+                    quantization_config=nf4, device_map="auto",
+                    max_memory=self._gpu_max_memory(reserve_gib=2.5),
+                    low_cpu_mem_usage=True,
+                )
+            else:
+                transformer = QwenImageTransformer2DModel.from_pretrained(
+                    BASE_MODEL_URI, subfolder="transformer", torch_dtype=torch.bfloat16,
+                    device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=2.5),
+                    low_cpu_mem_usage=True,
+                )
 
-        del vae
-        flush_cuda()
+            # Load LoRA
+            lora_config = LoraConfig.from_pretrained(LORA_MODEL_URI, subfolder="transformer_lora")
+            transformer.add_adapter(lora_config)
+            state_dict = fetch_state_dict(LORA_MODEL_URI, "pytorch_lora_weights.safetensors", subfolder="transformer_lora")
+            missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
+            if unexpected:
+                raise ValueError(f"Unexpected keys in LoRA state dict: {unexpected}")
+            transformer.eval()
+
+            if torch.cuda.is_available():
+                alloc = torch.cuda.memory_allocated() / 1024**3
+                total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                report(f"Transformer loaded: {alloc:.2f}/{total:.2f} GiB VRAM", 0.33)
+
+            processed_tiles = []
+            for i, latent in enumerate(encoded_tiles):
+                with torch.no_grad():
+                    output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict)
+                processed_tiles.append(output_latent)
+                flush_cuda()
+                report(f"Transformer tile {i+1}/{len(tiles)}", 0.35 + 0.35 * (i + 1) / len(tiles))
+
+            del transformer
+            transformer = None
+            flush_cuda()
+
+            # --- Phase 3: Decode tiles with VAE ---
+            report("Loading VAE for decoding...", 0.70)
+            flush_cuda()
+            vae = AutoencoderKLQwenImage.from_pretrained(
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
+                low_cpu_mem_usage=True, use_safetensors=True,
+            )
+            vae.eval()
+
+            decoded_tiles = []
+            for i, latent in enumerate(processed_tiles):
+                with torch.no_grad():
+                    decoded = decode_single(latent, vae)
+                decoded_tiles.append(decoded)
+                flush_cuda()
+                report(f"Decoding tile {i+1}/{len(tiles)}", 0.70 + 0.20 * (i + 1) / len(tiles))
+
+            del vae
+            vae = None
+            flush_cuda()
+
+        finally:
+            # Guarantee GPU cleanup even on exception
+            if vae is not None:
+                del vae
+            if transformer is not None:
+                del transformer
+            flush_cuda()
 
         # --- Phase 4: Stitch tiles ---
         report("Stitching tiles...", 0.90)

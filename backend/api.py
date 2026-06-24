@@ -710,32 +710,16 @@ async def export_all(
                 Image.open(img_path).convert("RGB").save(str(out_path))
                 lines.append(f"[{idx+1}/{total}] {name} (mock)")
             else:
-                # No cache, must process from scratch
-                try:
-                    from backend.config import params_from_quality
-                    img = Image.open(img_path).convert("RGB")
-                    params = params_from_quality(int(quality), use_4bit, output_format, int(jpg_quality))
-
-                    if not engine._initialized:
-                        progress_cb(idx / total, "Loading model...")
-                        engine.initialize()
-
-                    tmp_dir = Path("temp_processing")
-                    tmp_dir.mkdir(exist_ok=True)
-                    input_path = str(tmp_dir / "batch_input.png")
-                    img.save(input_path)
-                    out_path = export_dir / f"{name}_clean.{output_format}"
-
-                    def _pcb(msg, frac, _i=idx, _t=total):
-                        progress_cb((_i + frac) / _t, f"[{_i+1}/{_t}] {msg}")
-
-                    engine.process_image(input_path, str(out_path), params, _pcb)
-                    if strength < 1.0:
-                        proc = Image.open(str(out_path)).convert("RGB")
-                        Image.blend(img, proc, strength).save(str(out_path))
-                    lines.append(f"[{idx+1}/{total}] Done: {name}")
-                except Exception as e:
-                    lines.append(f"[{idx+1}/{total}] Error: {name} \u2014 {e}")
+                # No cache — export the original (don't re-run GPU processing)
+                out_path = export_dir / f"{name}_clean.{output_format}"
+                img = Image.open(img_path).convert("RGB")
+                if output_format == "jpg":
+                    img.save(str(out_path), "JPEG", quality=jpg_quality)
+                elif output_format == "webp":
+                    img.save(str(out_path), "WEBP", quality=jpg_quality)
+                else:
+                    img.save(str(out_path), "PNG")
+                lines.append(f"[{idx+1}/{total}] {name} (original — not yet processed)")
 
             progress_cb((idx + 1) / total, f"[{idx+1}/{total}] {name} done")
 
