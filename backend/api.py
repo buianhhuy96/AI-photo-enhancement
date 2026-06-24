@@ -372,6 +372,15 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
     if not Path(file_path).exists():
         raise HTTPException(404, f"File no longer exists: {file_path}")
 
+    # Check cache — if all steps are cached, return instantly
+    cache_key = (session_id, index)
+    if cache_key in _pipeline_cache:
+        final_hash = _pipeline_hash(req.steps, len(req.steps))
+        if final_hash in _pipeline_cache[cache_key]:
+            cached_img = _pipeline_cache[cache_key][final_hash]
+            url = _img_to_data_url(cached_img)
+            return {"status": "done", "url": url}
+
     # Create job
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "processing", "result": None, "error": None}
