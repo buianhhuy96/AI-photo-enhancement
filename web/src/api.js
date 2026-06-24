@@ -190,15 +190,29 @@ export async function runPipeline(sessionId, index, steps) {
 
   if (data.status === 'done') return data; // instant (cached)
 
-  // Poll for result
+  // Poll for result with retry on network errors
   const jobId = data.job_id;
+  let consecutiveErrors = 0;
+  const MAX_RETRIES = 10;
   while (true) {
     await new Promise((r) => setTimeout(r, 2000));
-    const pollRes = await fetch(`${API}/api/pipeline/status/${jobId}`);
+    let pollRes;
+    try {
+      pollRes = await fetch(`${API}/api/pipeline/status/${jobId}`);
+    } catch (networkErr) {
+      consecutiveErrors++;
+      if (consecutiveErrors >= MAX_RETRIES) {
+        throw new Error(`Lost connection to server after ${MAX_RETRIES} retries`);
+      }
+      // Wait longer on network errors (exponential backoff)
+      await new Promise((r) => setTimeout(r, Math.min(2000 * consecutiveErrors, 10000)));
+      continue;
+    }
     if (!pollRes.ok) {
       const err = await pollRes.text();
       throw new Error(err || `Pipeline failed: ${pollRes.status}`);
     }
+    consecutiveErrors = 0;
     const status = await pollRes.json();
     if (status.status === 'done') return status;
     if (status.status === 'error') throw new Error(status.detail || 'Pipeline failed');
