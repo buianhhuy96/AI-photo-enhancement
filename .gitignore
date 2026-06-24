@@ -1,0 +1,13 @@
+node_modules/
+web/node_modules/
+web/dist/
+__pycache__/
+*.pyc
+.cache/
+*.egg-info/
+dist/
+build/
+.env
+*.zip
+models/
+weights/
