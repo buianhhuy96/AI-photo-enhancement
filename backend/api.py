@@ -455,12 +455,22 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
                 import time
                 time.sleep(0.3)
             else:
-                _, original, processed, _ = process_single_image(
+                print(f"[pipeline] Reflection: quality={quality}, strength={strength}, use_4bit={use_4bit}, img_size={img.size}")
+                _, original, processed, status_msg = process_single_image(
                     engine, img, quality, 1.0, use_4bit, "png", 95,
                     mock_mode=False,
                 )
+                print(f"[pipeline] Result: processed={'OK' if processed is not None else 'NONE'}, status={status_msg}")
                 if processed is not None:
+                    # Check if processed differs from original
+                    import numpy as np
+                    orig_arr = np.array(original)
+                    proc_arr = np.array(processed)
+                    diff = np.abs(orig_arr.astype(float) - proc_arr.astype(float)).mean()
+                    print(f"[pipeline] Mean pixel diff: {diff:.2f} (0 = identical)")
                     img = blend_preview(strength, original, processed)
+                else:
+                    print(f"[pipeline] WARNING: processed is None, keeping original")
                 session["original"][index] = original
                 session["processed"][index] = processed
 
@@ -486,7 +496,9 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
     if max(preview.size) > PREVIEW_MAX:
         preview.thumbnail((PREVIEW_MAX, PREVIEW_MAX), Image.LANCZOS)
 
-    return {"url": _img_to_data_url(preview, "JPEG", 90)}
+    url = _img_to_data_url(preview, "JPEG", 90)
+    print(f"[pipeline] Returning preview: size={preview.size}, url_len={len(url)}")
+    return {"url": url}
 
 
 @app.post("/api/resize/{session_id}/{index}")
@@ -741,6 +753,28 @@ async def export_all(
             yield f"data: {item}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/export/download/{session_id}")
+async def download_exports(session_id: str):
+    """Download all exported files as a zip."""
+    import zipfile
+    export_dir = Path("exports")
+    if not export_dir.exists() or not list(export_dir.iterdir()):
+        raise HTTPException(404, "No exported files found")
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(export_dir.iterdir()):
+            if f.is_file():
+                zf.write(f, f.name)
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=exports.zip"}
+    )
 
 
 @app.post("/api/denoise/{session_id}/{index}")

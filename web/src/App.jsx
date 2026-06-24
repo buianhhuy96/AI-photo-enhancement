@@ -287,6 +287,13 @@ export default function App() {
         log(message);
       });
       log(data.status);
+      // Trigger download of the zip
+      const link = document.createElement('a');
+      link.href = `/api/export/download/${sessionId}`;
+      link.download = 'exports.zip';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     } catch (e) {
       log(`Export error: ${e.message}`);
     } finally {
