@@ -193,7 +193,7 @@ export async function runPipeline(sessionId, index, steps) {
   // Poll for result with retry on network errors
   const jobId = data.job_id;
   let consecutiveErrors = 0;
-  const MAX_RETRIES = 10;
+  const MAX_RETRIES = 30;
   while (true) {
     await new Promise((r) => setTimeout(r, 2000));
     let pollRes;
@@ -204,7 +204,15 @@ export async function runPipeline(sessionId, index, steps) {
       if (consecutiveErrors >= MAX_RETRIES) {
         throw new Error(`Lost connection to server after ${MAX_RETRIES} retries`);
       }
-      // Wait longer on network errors (exponential backoff)
+      await new Promise((r) => setTimeout(r, Math.min(2000 * consecutiveErrors, 10000)));
+      continue;
+    }
+    // Retry on gateway errors (502, 503, 504) - tunnel temporarily lost
+    if (pollRes.status >= 502 && pollRes.status <= 504) {
+      consecutiveErrors++;
+      if (consecutiveErrors >= MAX_RETRIES) {
+        throw new Error(`Server unreachable (${pollRes.status}) after ${MAX_RETRIES} retries`);
+      }
       await new Promise((r) => setTimeout(r, Math.min(2000 * consecutiveErrors, 10000)));
       continue;
     }
