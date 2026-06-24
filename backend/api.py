@@ -726,7 +726,7 @@ async def get_settings_status():
         cuda_available = torch.cuda.is_available()
         if cuda_available:
             gpu_name = torch.cuda.get_device_name(0)
-            gpu_vram = f"{torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB"
+            gpu_vram = f"{torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
     except ImportError:
         pass
 
