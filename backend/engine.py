@@ -326,9 +326,9 @@ class WindowSeatEngine:
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
-                device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
                 low_cpu_mem_usage=True, use_safetensors=True,
             )
+            vae.to(self.device, dtype=torch.bfloat16)
             vae.eval()
             vae_config = dict(vae.config)
             vae_dtype = vae.dtype
@@ -400,9 +400,9 @@ class WindowSeatEngine:
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
-                device_map="auto", max_memory=self._gpu_max_memory(reserve_gib=1.5),
                 low_cpu_mem_usage=True, use_safetensors=True,
             )
+            vae.to(self.device, dtype=torch.bfloat16)
             vae.eval()
 
             decoded_tiles = []
