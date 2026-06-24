@@ -1,5 +1,6 @@
 """Business logic services — called by any frontend (Gradio, React, CLI)."""
 import time
+import traceback
 from pathlib import Path
 from PIL import Image
 
@@ -74,6 +75,7 @@ def process_single_image(engine, img, quality, strength, use_4bit, output_format
         preview = Image.blend(img, processed, strength)
         return preview, img, processed, "Done — adjust Strength for live preview."
     except Exception as e:
+        traceback.print_exc()
         return None, None, None, f"Error: {e}"
 
 

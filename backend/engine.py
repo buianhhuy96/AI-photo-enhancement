@@ -317,10 +317,10 @@ class WindowSeatEngine:
             report("Loading VAE for encoding...", 0.05)
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
-                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
                 device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=torch.bfloat16)
+            vae.to(self.device, dtype=torch.float32)
             vae.eval()
             vae_config = dict(vae.config)
             vae_dtype = vae.dtype
@@ -388,10 +388,10 @@ class WindowSeatEngine:
             report("Loading VAE for decoding...", 0.70)
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
-                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.bfloat16,
+                BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
                 device_map=self.device, low_cpu_mem_usage=True, use_safetensors=True,
             )
-            vae.to(self.device, dtype=torch.bfloat16)
+            vae.to(self.device, dtype=torch.float32)
             vae.eval()
 
             decoded_tiles = []
