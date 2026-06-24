@@ -645,7 +645,7 @@ async def export_all(
     output_format: str = "png",
     jpg_quality: int = 95,
 ):
-    """Export all images with SSE progress streaming."""
+    """Export all images with SSE progress streaming. Uses pipeline cache when available."""
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -658,13 +658,78 @@ async def export_all(
         q.put(json.dumps({"progress": fraction, "message": description}))
 
     def run_export():
-        status = export_all_images(
-            engine, session["files"], quality, strength, use_4bit,
-            output_format, jpg_quality, mock_mode=mock_mode,
-            progress_cb=progress_cb,
-        )
+        file_list = session["files"]
+        if not file_list:
+            q.put(json.dumps({"progress": 1.0, "message": "No images imported.", "done": True}))
+            q.put(None)
+            return
+
+        export_dir = Path("exports")
+        export_dir.mkdir(exist_ok=True)
+        total = len(file_list)
+        lines = []
+
+        for idx, img_path in enumerate(file_list):
+            name = Path(img_path).stem
+            progress_cb((idx) / total, f"[{idx+1}/{total}] {name}...")
+
+            # Check if we have a cached pipeline result for this image
+            cache_key = (session_id, idx)
+            cached_img = None
+            if cache_key in _pipeline_cache and _pipeline_cache[cache_key]:
+                # Get the most complete cached result (longest step hash)
+                best = max(_pipeline_cache[cache_key].items(), key=lambda x: len(x[0]))
+                cached_img = best[1]
+
+            if cached_img is not None:
+                # Use cached result — no need to re-run AI
+                out_path = export_dir / f"{name}_clean.{output_format}"
+                if output_format == "jpg":
+                    cached_img.save(str(out_path), "JPEG", quality=jpg_quality)
+                elif output_format == "webp":
+                    cached_img.save(str(out_path), "WEBP", quality=jpg_quality)
+                else:
+                    cached_img.save(str(out_path), "PNG")
+                lines.append(f"[{idx+1}/{total}] Done: {name} (cached)")
+            elif mock_mode:
+                import time
+                time.sleep(0.3)
+                out_path = export_dir / f"{name}_clean.{output_format}"
+                Image.open(img_path).convert("RGB").save(str(out_path))
+                lines.append(f"[{idx+1}/{total}] {name} (mock)")
+            else:
+                # No cache, must process from scratch
+                try:
+                    from backend.config import params_from_quality
+                    img = Image.open(img_path).convert("RGB")
+                    params = params_from_quality(int(quality), use_4bit, output_format, int(jpg_quality))
+
+                    if not engine._initialized:
+                        progress_cb(idx / total, "Loading model...")
+                        engine.initialize()
+
+                    tmp_dir = Path("temp_processing")
+                    tmp_dir.mkdir(exist_ok=True)
+                    input_path = str(tmp_dir / "batch_input.png")
+                    img.save(input_path)
+                    out_path = export_dir / f"{name}_clean.{output_format}"
+
+                    def _pcb(msg, frac, _i=idx, _t=total):
+                        progress_cb((_i + frac) / _t, f"[{_i+1}/{_t}] {msg}")
+
+                    engine.process_image(input_path, str(out_path), params, _pcb)
+                    if strength < 1.0:
+                        proc = Image.open(str(out_path)).convert("RGB")
+                        Image.blend(img, proc, strength).save(str(out_path))
+                    lines.append(f"[{idx+1}/{total}] Done: {name}")
+                except Exception as e:
+                    lines.append(f"[{idx+1}/{total}] Error: {name} \u2014 {e}")
+
+            progress_cb((idx + 1) / total, f"[{idx+1}/{total}] {name} done")
+
+        status = f"Exported {total} images \u2192 exports/\n" + "\n".join(lines)
         q.put(json.dumps({"progress": 1.0, "message": status, "done": True}))
-        q.put(None)  # sentinel
+        q.put(None)
 
     def event_stream():
         thread = threading.Thread(target=run_export, daemon=True)
