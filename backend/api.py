@@ -38,6 +38,9 @@ app.add_middleware(
 # ── In-memory session storage ──
 _sessions: dict = {}
 
+# ── Async job storage ──
+_jobs: dict = {}  # job_id → {"status": "processing"|"done"|"error", "result": ..., "error": ...}
+
 # ── Persistent import cache ──
 CACHE_FILE = Path(".cache/imported_files.json")
 
@@ -356,10 +359,7 @@ def _pipeline_hash(steps: list[PipelineStep], up_to: int) -> str:
 
 @app.post("/api/pipeline/{session_id}/{index}")
 async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
-    """Run a pipeline of steps in order, chaining outputs. Returns final preview.
-
-    Caches intermediate results per step so toggling off the last step is instant.
-    """
+    """Start a pipeline job. Returns job_id immediately for polling."""
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
@@ -372,6 +372,49 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
     if not Path(file_path).exists():
         raise HTTPException(404, f"File no longer exists: {file_path}")
 
+    # Create job
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "processing", "result": None, "error": None}
+
+    # Run in background thread
+    def run_job():
+        try:
+            result = _execute_pipeline(session_id, index, file_path, req.steps)
+            _jobs[job_id]["result"] = result
+            _jobs[job_id]["status"] = "done"
+        except Exception as e:
+            _jobs[job_id]["error"] = str(e)
+            _jobs[job_id]["status"] = "error"
+
+    thread = threading.Thread(target=run_job, daemon=True)
+    thread.start()
+
+    return {"job_id": job_id, "status": "processing"}
+
+
+@app.get("/api/pipeline/status/{job_id}")
+async def get_pipeline_status(job_id: str):
+    """Poll for pipeline job result."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+
+    if job["status"] == "done":
+        result = job["result"]
+        # Clean up job
+        del _jobs[job_id]
+        return {"status": "done", **result}
+    elif job["status"] == "error":
+        error = job["error"]
+        del _jobs[job_id]
+        raise HTTPException(500, error)
+    else:
+        return {"status": "processing"}
+
+
+def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
+    """Execute pipeline steps synchronously (called from background thread)."""
+    session = _sessions[session_id]
     mock_mode = _sessions.get("__mock_mode__", True)
     engine = _sessions.get("__engine__")
     restore_engine = _sessions.get("__restore_engine__")
@@ -385,7 +428,6 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
 
     # Load original
     img = Image.open(file_path).convert("RGB")
-    steps = req.steps
 
     # Walk through steps, using cache where possible
     for i, step in enumerate(steps):
@@ -412,7 +454,6 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
             if mock_mode:
                 import time
                 time.sleep(0.3)
-                # Mock: just return as-is
             else:
                 _, original, processed, _ = process_single_image(
                     engine, img, quality, 1.0, use_4bit, "png", 95,
@@ -420,7 +461,6 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
                 )
                 if processed is not None:
                     img = blend_preview(strength, original, processed)
-                # Store for blend support
                 session["original"][index] = original
                 session["processed"][index] = processed
 
@@ -432,7 +472,7 @@ async def run_pipeline(session_id: str, index: int, req: PipelineRequest):
                 time.sleep(0.3)
             else:
                 if restore_engine is None:
-                    raise HTTPException(500, "Restore engine not initialized")
+                    raise Exception("Restore engine not initialized")
                 if denoise_level > 0:
                     img = restore_engine.denoise(img, denoise_level)
                 if deblur_level > 0:

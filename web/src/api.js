@@ -179,13 +179,31 @@ export async function deblurImage(sessionId, index, strength = 1.0) {
 }
 
 export async function runPipeline(sessionId, index, steps) {
+  // Start the job
   const res = await fetch(`${API}/api/pipeline/${sessionId}/${index}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ steps }),
   });
   if (!res.ok) throw new Error(`Pipeline failed: ${res.status}`);
-  return res.json();
+  const data = await res.json();
+
+  if (data.status === 'done') return data; // instant (cached)
+
+  // Poll for result
+  const jobId = data.job_id;
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const pollRes = await fetch(`${API}/api/pipeline/status/${jobId}`);
+    if (!pollRes.ok) {
+      const err = await pollRes.text();
+      throw new Error(err || `Pipeline failed: ${pollRes.status}`);
+    }
+    const status = await pollRes.json();
+    if (status.status === 'done') return status;
+    if (status.status === 'error') throw new Error(status.detail || 'Pipeline failed');
+    // else still processing, continue polling
+  }
 }
 
 export async function processImage(sessionId, index, params = {}) {
