@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { listDir, browseFolder } from '../api';
 
 function FolderTree({ onSelectFolder, selectedPath }) {
@@ -180,7 +180,7 @@ function ImageGrid({ images, checked, onToggle }) {
   );
 }
 
-export default function ImportPanel({ onImportFiles, processing }) {
+export default function ImportPanel({ onImportFiles, onUploadFiles, processing }) {
   const [images, setImages] = useState([]);
   const [checked, setChecked] = useState(new Set());
   const [browsing, setBrowsing] = useState(false);
@@ -216,6 +216,23 @@ export default function ImportPanel({ onImportFiles, processing }) {
   const handleImport = () => {
     const paths = images.filter((_, i) => checked.has(i)).map((img) => img.path);
     if (paths.length) onImportFiles(paths);
+  };
+
+  // Upload (drag-and-drop / file picker)
+  const fileInputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const files = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/'));
+    if (files.length && onUploadFiles) onUploadFiles(files);
+  };
+
+  const handleFileSelect = (e) => {
+    const files = [...e.target.files];
+    if (files.length && onUploadFiles) onUploadFiles(files);
+    e.target.value = '';
   };
 
   return (
@@ -301,6 +318,44 @@ export default function ImportPanel({ onImportFiles, processing }) {
               </div>
             </>
           )}
+        </div>
+
+        {/* Upload zone */}
+        <div className="border-t p-3" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: 'var(--text-secondary)' }}>
+            Upload from Device
+          </div>
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-1.5 rounded cursor-pointer transition-colors"
+            style={{
+              border: `2px dashed ${dragOver ? 'var(--accent)' : 'var(--border-color)'}`,
+              background: dragOver ? 'rgba(176,176,176,0.1)' : 'transparent',
+              padding: '16px 8px',
+            }}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+                 style={{ color: 'var(--text-secondary)' }}>
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+              {dragOver ? 'Drop images here' : 'Drag & drop or click'}
+            </span>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*"
+            onChange={handleFileSelect}
+            className="hidden"
+          />
         </div>
 
         {/* Current folder info */}

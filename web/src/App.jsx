@@ -5,7 +5,7 @@ import ControlPanel from './components/ControlPanel';
 import ImportPanel from './components/ImportPanel';
 import StatusLog from './components/StatusLog';
 import SettingsPanel from './components/SettingsPanel';
-import { restoreSession, importFiles, getImage, processImage, blendImage, exportAll, removeImages, deleteImages, runPipeline } from './api';
+import { restoreSession, importFiles, uploadFiles, getImage, processImage, blendImage, exportAll, removeImages, deleteImages, runPipeline } from './api';
 
 export default function App() {
   const [sessionId, setSessionId] = useState(null);
@@ -95,6 +95,40 @@ export default function App() {
       setActiveTab('develop');
     } catch (e) {
       log(`Import error: ${e.message}`);
+    } finally {
+      setProcessing(false);
+    }
+  }, [sessionId]);
+
+  const handleUploadFiles = useCallback(async (fileList) => {
+    setProcessing(true);
+    log('Uploading...');
+    try {
+      const data = await uploadFiles(Array.from(fileList), sessionId);
+      setSessionId(data.session_id);
+      setThumbnails(data.thumbnails);
+      setImageCount(data.count);
+      setSelectedSet(EMPTY_SET);
+      imageCache.current.clear();
+
+      if (data.added === 0) {
+        log(`All images already in library (${data.count} total)`);
+        setActiveTab('develop');
+        return;
+      }
+
+      log(`Uploaded ${data.added} image(s) — ${data.count} total in library`);
+      const newIndex = data.count - data.added;
+      setSelectedIndex(newIndex);
+      const img = await getImage(data.session_id, newIndex);
+      imageCache.current.set(newIndex, img);
+      setCurrentImage(img.url);
+      if (img.width) setOriginalSize({ width: img.width, height: img.height });
+      setResultImage(null);
+      setIsProcessed(false);
+      setActiveTab('develop');
+    } catch (e) {
+      log(`Upload error: ${e.message}`);
     } finally {
       setProcessing(false);
     }
@@ -323,7 +357,7 @@ export default function App() {
         {/* Center content */}
         <div className="order-1 flex flex-1 flex-col min-w-0">
           {activeTab === 'import' ? (
-            <ImportPanel onImportFiles={handleImportFiles} processing={processing} />
+            <ImportPanel onImportFiles={handleImportFiles} onUploadFiles={handleUploadFiles} processing={processing} />
           ) : activeTab === 'settings' ? (
             <SettingsPanel />
           ) : (
