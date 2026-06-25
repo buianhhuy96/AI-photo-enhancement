@@ -8,7 +8,7 @@ import sys
 def main():
     print()
     print("=" * 60)
-    print("  Downloading WindowSeat model weights")
+    print("  Downloading AI Photo Enhancer model weights")
     print("  This is ~10GB total. May take 10-30 minutes.")
     print("=" * 60)
     print()
@@ -24,7 +24,7 @@ def main():
     LORA_MODEL = "huawei-bayerlab/windowseat-reflection-removal-v1-0"
 
     # --- 1. Download LoRA model files (small, ~500MB) ---
-    print("[1/5] Downloading WindowSeat LoRA weights...")
+    print("[1/5] Downloading reflection removal LoRA weights...")
     print(f"      Repo: {LORA_MODEL}")
     try:
         snapshot_download(

@@ -1,19 +1,17 @@
 """
-WindowSeat Reflection Removal Engine.
+AI Photo Enhancer - Reflection Removal Engine.
 Sequential offload: loads VAE and Transformer separately to fit in ~12-16GB VRAM.
-Based on Qwen-Image-Edit-2509 + WindowSeat LoRA.
+Based on Qwen-Image-Edit-2509 + reflection removal LoRA.
 """
 import gc
 import json
 import math
 import os
-from pathlib import Path
 from typing import Callable, Optional
 
 # Set CUDA memory config before any torch import
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-import imageio.v2 as imageio
 import numpy as np
 import safetensors
 import torch
@@ -28,7 +26,7 @@ from huggingface_hub import hf_hub_download
 from peft import LoraConfig
 from PIL import Image
 
-from .config import BASE_MODEL_URI, LORA_MODEL_URI, InferenceParams, SUPPORTED_EXTENSIONS
+from .config import BASE_MODEL_URI, LORA_MODEL_URI, InferenceParams
 
 
 def flush_cuda():
@@ -41,18 +39,6 @@ def flush_cuda():
 def fetch_state_dict(repo_id: str, weight_name: str, subfolder: str = None):
     file_path = hf_hub_download(repo_id, weight_name, subfolder=subfolder)
     return safetensors.torch.load_file(file_path)
-
-
-def _match_batch(t: torch.Tensor, B: int) -> torch.Tensor:
-    """Match tensor batch dimension to B (expand, repeat, or slice)."""
-    if t.size(0) == B:
-        return t
-    if t.size(0) == 1 and B > 1:
-        return t.expand(B, *t.shape[1:])
-    if t.size(0) > B:
-        return t[:B]
-    reps = (B + t.size(0) - 1) // t.size(0)
-    return t.repeat((reps,) + (1,) * (t.ndim - 1))[:B]
 
 
 # ---------- Encoding / Decoding ----------
@@ -250,7 +236,7 @@ def prepare_tile(img_path: str, tile_info: tuple, processing_resolution: int) ->
 
 # ---------- Main Engine ----------
 
-class WindowSeatEngine:
+class ReflectionRemovalEngine:
     """Manages model loading and inference with sequential offloading."""
 
     def __init__(self):
@@ -315,7 +301,6 @@ class WindowSeatEngine:
         try:
             # --- Phase 1: Encode tiles with VAE ---
             report("Loading VAE for encoding...", 0.05)
-            print(f"[engine] Phase 1: Loading VAE (float32, no device_map)")
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
@@ -325,7 +310,6 @@ class WindowSeatEngine:
             vae.eval()
             vae_config = dict(vae.config)
             vae_dtype = vae.dtype
-            print(f"[engine] Phase 1: VAE loaded, dtype={vae_dtype}, device={next(vae.parameters()).device}")
 
             encoded_tiles = []
             for i, tile_info in enumerate(tiles):
@@ -339,7 +323,6 @@ class WindowSeatEngine:
             del vae
             vae = None
             flush_cuda()
-            print(f"[engine] Phase 1 DONE: {len(encoded_tiles)} tiles encoded")
 
             # --- Phase 2: Transformer (flow step) ---
             report("Loading transformer...", 0.30)
@@ -377,7 +360,6 @@ class WindowSeatEngine:
 
             processed_tiles = []
             for i, latent in enumerate(encoded_tiles):
-                print(f"[engine] Phase 2: Processing tile {i+1}/{len(encoded_tiles)}")
                 with torch.no_grad():
                     output_latent = flow_step_single(latent, transformer, vae_config, vae_dtype, self.embeds_dict)
                 processed_tiles.append(output_latent)
@@ -387,11 +369,9 @@ class WindowSeatEngine:
             del transformer
             transformer = None
             flush_cuda()
-            print(f"[engine] Phase 2 DONE: {len(processed_tiles)} tiles processed")
 
             # --- Phase 3: Decode tiles with VAE ---
             report("Loading VAE for decoding...", 0.70)
-            print("[engine] Phase 3: Loading VAE for decode (float32, no device_map)")
             flush_cuda()
             vae = AutoencoderKLQwenImage.from_pretrained(
                 BASE_MODEL_URI, subfolder="vae", torch_dtype=torch.float32,
@@ -463,53 +443,3 @@ class WindowSeatEngine:
 
         report("Done", 1.0)
         return output_path
-
-    def process_batch(
-        self,
-        input_paths: list,
-        output_dir: str,
-        params: InferenceParams,
-        progress_callback: Optional[Callable[[str, float, int, int], None]] = None,
-    ) -> list:
-        """
-        Process multiple images.
-        progress_callback(status, image_fraction, current_index, total)
-        Returns list of output paths.
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        results = []
-
-        for idx, img_path in enumerate(input_paths):
-            name = Path(img_path).stem
-            ext = f".{params.output_format}"
-            out_path = os.path.join(output_dir, f"{name}_clean{ext}")
-
-            if os.path.exists(out_path):
-                results.append(out_path)
-                if progress_callback:
-                    progress_callback(f"Skipped (exists): {name}", 1.0, idx, len(input_paths))
-                continue
-
-            def img_progress(msg, frac):
-                if progress_callback:
-                    progress_callback(msg, frac, idx, len(input_paths))
-
-            try:
-                result = self.process_image(img_path, out_path, params, img_progress)
-                results.append(result)
-            except Exception as e:
-                results.append(None)
-                if progress_callback:
-                    progress_callback(f"Error: {e}", 0.0, idx, len(input_paths))
-
-        return results
-
-
-def collect_images(path: str) -> list:
-    """Collect image paths from a file or directory."""
-    p = Path(path)
-    if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
-        return [str(p)]
-    elif p.is_dir():
-        return sorted(str(f) for f in p.iterdir() if f.suffix.lower() in SUPPORTED_EXTENSIONS)
-    return []

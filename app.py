@@ -1,5 +1,5 @@
 """
-WindowSeat Reflection Removal - Desktop Application.
+AI Photo Enhancer - Desktop Application.
 Topaz-style UI with side panel controls and progress popup.
 
 Usage:
@@ -30,8 +30,8 @@ MOCK_MODE = _args.mock
 WEB_MODE = _args.web
 
 if not MOCK_MODE:
-    from backend.engine import WindowSeatEngine, collect_images
-    engine = WindowSeatEngine()
+    from backend.engine import ReflectionRemovalEngine, collect_images
+    engine = ReflectionRemovalEngine()
 else:
     engine = None
 
@@ -123,7 +123,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("WindowSeat — Reflection Removal")
+        self.title("AI Photo Enhancer")
         self.geometry("1280x780")
         self.minsize(1000, 600)
         self.configure(fg_color=BG_DARK)
@@ -158,7 +158,7 @@ class App(ctk.CTk):
         header = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 
-        ctk.CTkLabel(header, text="WindowSeat",
+        ctk.CTkLabel(header, text="AI Photo Enhancer",
                      font=ctk.CTkFont(size=22, weight="bold")).pack(side="left")
 
         self.gpu_label = ctk.CTkLabel(header, text="GPU: detecting...",
@@ -249,7 +249,7 @@ class App(ctk.CTk):
                                         fg_color="#374151", hover_color="#4b5563")
         self.output_btn.pack(fill="x", padx=10, pady=(5, 2))
 
-        self.output_info = ctk.CTkLabel(p, text="Auto: input_dir/windowseat_output",
+        self.output_info = ctk.CTkLabel(p, text="Auto: input_dir/enhanced_output",
                                         font=ctk.CTkFont(size=11),
                                         text_color="gray", wraplength=280)
         self.output_info.pack(fill="x", padx=10, pady=(0, 10))
@@ -418,9 +418,9 @@ class App(ctk.CTk):
         output_dir = self.output_dir
         if not output_dir:
             if os.path.isfile(self.input_path):
-                output_dir = os.path.join(os.path.dirname(self.input_path), "windowseat_output")
+                output_dir = os.path.join(os.path.dirname(self.input_path), "enhanced_output")
             else:
-                output_dir = os.path.join(self.input_path, "windowseat_output")
+                output_dir = os.path.join(self.input_path, "enhanced_output")
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -593,7 +593,7 @@ def launch_web_ui():
         export_dir = Path("exports")
         export_dir.mkdir(exist_ok=True)
         timestamp = int(time.time())
-        out_path = export_dir / f"windowseat_{timestamp}.{output_format}"
+        out_path = export_dir / f"enhanced_{timestamp}.{output_format}"
         save_kwargs = {}
         if output_format in ("jpg", "jpeg"):
             save_kwargs["quality"] = int(jpg_quality)
@@ -841,13 +841,13 @@ def launch_web_ui():
         slider_color_dark="#b3b3b3",
     )
 
-    with gr.Blocks(title="WindowSeat Reflection Removal") as demo:
+    with gr.Blocks(title="AI Photo Enhancer") as demo:
         # State
         original_state = gr.State(value=None)
         processed_state = gr.State(value=None)
 
         # Top bar
-        gr.HTML('<div class="top-bar"><h2><span class="accent">WindowSeat</span>  |  Reflection Removal</h2></div>')
+        gr.HTML('<div class="top-bar"><h2><span class="accent">AI Photo Enhancer</span>  |  Reflection Removal</h2></div>')
 
         with gr.Row(equal_height=False):
             # === LEFT SIDEBAR ===

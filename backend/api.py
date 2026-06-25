@@ -23,11 +23,11 @@ from backend.services import (
     process_single_image,
     blend_preview,
     resize_image,
-    export_all_images,
-    THUMBNAIL_SIZE,
 )
 
-app = FastAPI(title="WindowSeat API")
+THUMBNAIL_SIZE = (120, 80)
+
+app = FastAPI(title="AI Photo Enhancer API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -903,7 +903,7 @@ async def get_settings_status():
     # Check which models are available
     models = {}
 
-    # WindowSeat reflection removal (LoRA)
+    # Reflection removal LoRA
     try:
         from huggingface_hub import try_to_load_from_cache
         lora_path = try_to_load_from_cache(
@@ -911,9 +911,9 @@ async def get_settings_status():
             "pytorch_lora_weights.safetensors",
             subfolder="transformer_lora",
         )
-        models["windowseat_lora"] = {"name": "WindowSeat Reflection Removal (LoRA)", "size": "~500MB", "downloaded": lora_path is not None and lora_path != "NOT_FOUND"}
+        models["reflection_lora"] = {"name": "Reflection Removal (LoRA)", "size": "~500MB", "downloaded": lora_path is not None and lora_path != "NOT_FOUND"}
     except Exception:
-        models["windowseat_lora"] = {"name": "WindowSeat Reflection Removal (LoRA)", "size": "~500MB", "downloaded": False}
+        models["reflection_lora"] = {"name": "Reflection Removal (LoRA)", "size": "~500MB", "downloaded": False}
 
     # Base model - Transformer
     try:
@@ -1036,13 +1036,13 @@ async def download_model(model_id: str):
     def do_download():
         try:
             from huggingface_hub import snapshot_download
-            if model_id == "windowseat_lora":
-                q.put(json.dumps({"progress": 0.1, "message": "Downloading WindowSeat LoRA..."}))
+            if model_id == "reflection_lora":
+                q.put(json.dumps({"progress": 0.1, "message": "Downloading Reflection Removal LoRA..."}))
                 snapshot_download(
                     "huawei-bayerlab/windowseat-reflection-removal-v1-0",
                     allow_patterns=["*.json", "*.safetensors", "*.txt", "*.md"],
                 )
-                q.put(json.dumps({"progress": 1.0, "message": "WindowSeat LoRA downloaded", "done": True}))
+                q.put(json.dumps({"progress": 1.0, "message": "Reflection Removal LoRA downloaded", "done": True}))
             elif model_id == "qwen_transformer":
                 q.put(json.dumps({"progress": 0.1, "message": "Downloading Transformer (~8GB)..."}))
                 snapshot_download(

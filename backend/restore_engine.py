@@ -1,7 +1,5 @@
 """NAFNet-based image restoration engine for denoise and deblur."""
-import os
 import numpy as np
-from pathlib import Path
 from PIL import Image
 
 

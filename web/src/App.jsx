@@ -5,7 +5,7 @@ import ControlPanel from './components/ControlPanel';
 import ImportPanel from './components/ImportPanel';
 import StatusLog from './components/StatusLog';
 import SettingsPanel from './components/SettingsPanel';
-import { restoreSession, importFiles, uploadFiles, getImage, processImage, blendImage, exportAll, removeImages, deleteImages, runPipeline } from './api';
+import { restoreSession, importFiles, uploadFiles, getImage, exportAll, removeImages, deleteImages, runPipeline } from './api';
 
 export default function App() {
   const [sessionId, setSessionId] = useState(null);
@@ -22,7 +22,6 @@ export default function App() {
   const [processing, setProcessing] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
   const [logEntries, setLogEntries] = useState([]);
-  const [showOriginal, setShowOriginal] = useState(false);
 
   // Multi-select for filmstrip
   const [selectedSet, setSelectedSet] = useState(new Set());
@@ -35,7 +34,6 @@ export default function App() {
   const [exportProgress, setExportProgress] = useState(null); // null = not exporting, 0-1 = progress
 
   const EMPTY_SET = useRef(new Set()).current;
-  const blendTimer = useRef(null);
   const imageCache = useRef(new Map()); // index → full-res URL
 
   const log = useCallback((msg) => {
@@ -302,7 +300,7 @@ export default function App() {
     }
   }, [sessionId, quality, strength, use4bit, outputFormat, jpgQuality]);
 
-  const displayImage = showOriginal ? currentImage : (resultImage || currentImage);
+  const displayImage = resultImage || currentImage;
 
   return (
     <div className="flex h-screen w-screen flex-col">
@@ -313,7 +311,7 @@ export default function App() {
       >
         <div className="flex items-center gap-4">
           <span className="text-sm font-bold tracking-wide" style={{ color: 'var(--accent)' }}>
-            ✦ WindowSeat
+            ✦ AI Photo Enhancer
           </span>
           <nav className="flex gap-1">
             {[

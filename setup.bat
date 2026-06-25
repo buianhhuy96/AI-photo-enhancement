@@ -2,15 +2,15 @@
 setlocal enabledelayedexpansion
 
 REM ============================================================
-REM  WindowSeat Reflection Removal - Full Setup (Windows)
+REM  AI Photo Enhancer - Full Setup (Windows)
 REM  This script handles everything: Python, CUDA deps, venv, packages.
 REM ============================================================
 
-title WindowSeat Reflection Removal - Setup
+title AI Photo Enhancer - Setup
 
 echo.
 echo  ================================================================
-echo    WindowSeat Reflection Removal - Automated Setup
+echo    AI Photo Enhancer - Automated Setup
 echo    ------------------------------------------------
 echo    This installer will:
 echo      1. Check/install Python 3.11
@@ -276,7 +276,7 @@ REM ============================================================
 echo.
 echo [6/7] HuggingFace Configuration
 echo.
-echo  The WindowSeat model weights are hosted on HuggingFace.
+echo  The model weights are hosted on HuggingFace.
 echo  You need a free HuggingFace account and access token.
 echo.
 echo  Get your token at: https://huggingface.co/settings/tokens

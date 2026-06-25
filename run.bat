@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title WindowSeat Reflection Removal
+title AI Photo Enhancer
 
 echo.
-echo  WindowSeat Reflection Removal
+echo  AI Photo Enhancer
 echo  ==============================
 echo.
 

@@ -1,4 +1,4 @@
-# WindowSeat Reflection Removal - Local Application
+# AI Photo Enhancer - Local Application
 # Versions matched to official repo: huawei-bayerlab/windowseat-reflection-removal
 
 # Backend

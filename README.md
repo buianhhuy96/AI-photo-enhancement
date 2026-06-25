@@ -1,4 +1,4 @@
-# WindowSeat Reflection Removal
+# AI Photo Enhancer
 
 Local desktop application for removing reflections from photos taken through glass, powered by [WindowSeat](https://github.com/huawei-bayerlab/windowseat-reflection-removal) (Huawei BayerLab, 2025).
 
@@ -31,7 +31,7 @@ app.py              — Main entry point (Gradio UI + inference)
 run_server.py       — REST API server (FastAPI, for programmatic use)
 backend/
   config.py         — Configuration and parameter defaults
-  engine.py         — WindowSeat inference engine (sequential offload)
+  engine.py         — Reflection removal inference engine (sequential offload)
   api.py            — FastAPI endpoints
 setup.bat           — Windows setup script
 run.bat             — Windows launch script
@@ -57,4 +57,4 @@ Then call `POST /process` with:
 
 ## Model
 
-Uses **Qwen-Image-Edit-2509** as base model with the **WindowSeat LoRA** adapter for reflection removal. Model weights are downloaded automatically from HuggingFace on first run (~10GB).
+Uses **Qwen-Image-Edit-2509** as base model with the **reflection removal LoRA** adapter. Model weights are downloaded automatically from HuggingFace on first run (~10GB).

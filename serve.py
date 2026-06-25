@@ -2,7 +2,7 @@
 import argparse
 import uvicorn
 
-parser = argparse.ArgumentParser(description="WindowSeat API Server")
+parser = argparse.ArgumentParser(description="AI Photo Enhancer API Server")
 parser.add_argument("--mock", action="store_true", help="Run without AI model")
 parser.add_argument("--host", default="0.0.0.0", help="API host (default: 0.0.0.0)")
 parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
@@ -13,8 +13,8 @@ engine = None
 upscale_engine = None
 restore_engine = None
 if not args.mock:
-    from backend.engine import WindowSeatEngine
-    engine = WindowSeatEngine()
+    from backend.engine import ReflectionRemovalEngine
+    engine = ReflectionRemovalEngine()
     from backend.upscale_engine import UpscaleEngine
     upscale_engine = UpscaleEngine()
     from backend.restore_engine import RestoreEngine

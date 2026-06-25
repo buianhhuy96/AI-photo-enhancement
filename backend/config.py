@@ -1,5 +1,5 @@
-"""Configuration and parameter defaults for WindowSeat inference."""
-from dataclasses import dataclass, field
+"""Configuration and parameter defaults for reflection removal inference."""
+from dataclasses import dataclass
 from typing import Optional
 
 

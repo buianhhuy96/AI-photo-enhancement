@@ -151,33 +151,6 @@ export async function getImage(sessionId, index) {
   return res.json();
 }
 
-export async function resizeImage(sessionId, index, width, height, denoiseStrength = 0.5) {
-  const qs = new URLSearchParams({ width, height, denoise_strength: denoiseStrength });
-  const res = await fetch(`${API}/api/resize/${sessionId}/${index}?${qs}`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error(`Resize failed: ${res.status}`);
-  return res.json();
-}
-
-export async function denoiseImage(sessionId, index, strength = 1.0) {
-  const qs = new URLSearchParams({ strength });
-  const res = await fetch(`${API}/api/denoise/${sessionId}/${index}?${qs}`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error(`Denoise failed: ${res.status}`);
-  return res.json();
-}
-
-export async function deblurImage(sessionId, index, strength = 1.0) {
-  const qs = new URLSearchParams({ strength });
-  const res = await fetch(`${API}/api/deblur/${sessionId}/${index}?${qs}`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error(`Deblur failed: ${res.status}`);
-  return res.json();
-}
-
 export async function runPipeline(sessionId, index, steps) {
   // Start the job
   const res = await fetch(`${API}/api/pipeline/${sessionId}/${index}`, {
@@ -226,30 +199,6 @@ export async function runPipeline(sessionId, index, steps) {
     if (status.status === 'error') throw new Error(status.detail || 'Pipeline failed');
     // else still processing, continue polling
   }
-}
-
-export async function processImage(sessionId, index, params = {}) {
-  const qs = new URLSearchParams({
-    quality: params.quality ?? 0,
-    strength: params.strength ?? 0.5,
-    use_4bit: params.use4bit ?? true,
-    output_format: params.outputFormat ?? 'png',
-    jpg_quality: params.jpgQuality ?? 95,
-  });
-  const res = await fetch(`${API}/api/process/${sessionId}/${index}?${qs}`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error(`Processing failed: ${res.status}`);
-  return res.json();
-}
-
-export async function blendImage(sessionId, index, strength) {
-  const qs = new URLSearchParams({ strength });
-  const res = await fetch(`${API}/api/blend/${sessionId}/${index}?${qs}`, {
-    method: 'POST',
-  });
-  if (!res.ok) throw new Error(`Blend failed: ${res.status}`);
-  return res.json();
 }
 
 export async function exportAll(sessionId, params = {}, onProgress) {

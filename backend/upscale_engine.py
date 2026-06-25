@@ -14,7 +14,6 @@ class UpscaleEngine:
     def initialize(self, denoise_strength=0.5):
         """Load the realesr-general-x4v3 model with given denoise strength."""
         from realesrgan import RealESRGANer
-        from basicsr.archs.rrdbnet_arch import RRDBNet
         from realesrgan.archs.srvgg_arch import SRVGGNetCompact
         import torch
 
