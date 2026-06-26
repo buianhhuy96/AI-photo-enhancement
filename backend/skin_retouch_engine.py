@@ -123,15 +123,20 @@ class SkinRetouchEngine:
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
     def retouch(self, img, strength=0.5, detail_size=0.05):
-        """Remove blemishes: GFPGAN regenerates skin, blended via face parsing mask.
+        """Remove blemishes via frequency separation + GFPGAN.
 
-        Takes L-channel (luminance/texture) from GFPGAN output and blends it
-        onto original skin. This removes dark spots while preserving skin tone.
+        Frequency separation splits the image into:
+        - Low frequency: face shape, shadows, contours (preserved from original)
+        - High frequency: skin texture, pores, blemishes (taken from GFPGAN)
+
+        This keeps eye shape and nose shadows intact while replacing blemished
+        texture with GFPGAN's clean generated texture.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = full GFPGAN skin replacement.
-            detail_size: Not used in GFPGAN mode (kept for API compat).
+            strength: 0.0 = no change, 1.0 = full texture replacement.
+            detail_size: Controls frequency split point as fraction of short edge.
+                         Larger = more preserved as "structure", smaller details replaced.
 
         Returns:
             Retouched PIL Image (RGB).
@@ -143,6 +148,8 @@ class SkinRetouchEngine:
 
         strength = min(strength, 1.0)
         img_array = np.array(img)
+        h, w = img_array.shape[:2]
+        short_edge = min(h, w)
 
         # Step 1: Get GFPGAN restored face
         restored = self._restore_face(img_array)
@@ -152,23 +159,40 @@ class SkinRetouchEngine:
 
         # Step 2: Get skin mask from face parsing
         skin_mask = self._get_skin_mask(img)
-        mask = skin_mask[:, :, np.newaxis]  # (H, W, 1) for broadcasting
 
-        # Step 3: LAB blending - take L from GFPGAN (clean texture), keep A/B from original (skin tone)
+        # Step 3: Frequency separation on L-channel
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
         restored_lab = cv2.cvtColor(restored, cv2.COLOR_RGB2LAB).astype(np.float32)
 
-        # Blend L-channel (removes blemishes = dark spots in luminance)
         L_orig = img_lab[:, :, 0]
         L_restored = restored_lab[:, :, 0]
-        L_result = L_orig * (1 - strength * skin_mask) + L_restored * (strength * skin_mask)
+
+        # Separation radius from detail_size (fraction of short edge)
+        radius = max(3, int(short_edge * detail_size))
+        if radius % 2 == 0:
+            radius += 1
+        sigma = radius * 0.4
+
+        # Split into low (structure) and high (texture) frequencies
+        L_low_orig = cv2.GaussianBlur(L_orig, (radius * 2 + 1, radius * 2 + 1), sigma)
+        L_high_orig = L_orig - L_low_orig
+
+        L_low_restored = cv2.GaussianBlur(L_restored, (radius * 2 + 1, radius * 2 + 1), sigma)
+        L_high_restored = L_restored - L_low_restored
+
+        # Combine: original structure + GFPGAN clean texture
+        L_combined = L_low_orig + L_high_restored
+
+        # Blend onto original with strength and skin mask
+        L_result = L_orig * (1 - strength * skin_mask) + L_combined * (strength * skin_mask)
 
         # Keep original chrominance (preserves exact skin tone)
         result_lab = np.stack([L_result, img_lab[:, :, 1], img_lab[:, :, 2]], axis=-1)
         result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
         result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
 
-        print(f"[skin_retouch] L diff in skin: mean={np.abs(L_result - L_orig).mean():.2f}, "
+        print(f"[skin_retouch] freq-sep radius={radius}, L diff in skin: "
+              f"mean={np.abs(L_result - L_orig).mean():.2f}, "
               f"max={np.abs(L_result - L_orig).max():.2f}, strength={strength}")
 
         return Image.fromarray(result_rgb)
