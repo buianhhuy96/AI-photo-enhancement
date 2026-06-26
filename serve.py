@@ -19,10 +19,14 @@ if not args.mock:
     upscale_engine = UpscaleEngine()
     from backend.restore_engine import RestoreEngine
     restore_engine = RestoreEngine()
+    from backend.skin_retouch_engine import SkinRetouchEngine
+    skin_retouch_engine = SkinRetouchEngine()
+else:
+    skin_retouch_engine = None
 
 # Configure the FastAPI app
 from backend.api import app, configure
-configure(engine=engine, mock_mode=args.mock, upscale_engine=upscale_engine, restore_engine=restore_engine)
+configure(engine=engine, mock_mode=args.mock, upscale_engine=upscale_engine, restore_engine=restore_engine, skin_retouch_engine=skin_retouch_engine)
 
 # Serve static frontend from web/dist if it exists (for single-port deployment)
 import os

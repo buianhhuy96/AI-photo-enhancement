@@ -20,6 +20,9 @@ imageio>=2.37.0
 numpy>=2.0.0
 Pillow>=12.0.0
 
+# Image processing
+opencv-python>=4.8.0
+
 # UI (Desktop app)
 customtkinter>=5.2.0
 Pillow>=12.0.0

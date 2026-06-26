@@ -497,6 +497,18 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
                 if deblur_level > 0:
                     img = restore_engine.deblur(img, deblur_level)
 
+        elif step.name == "skin_retouch":
+            skin_strength = float(step.params.get("strength", 0.5))
+            detail_size = float(step.params.get("detail_size", 0.01))
+            skin_engine = _sessions.get("__skin_retouch_engine__")
+            if mock_mode:
+                import time
+                time.sleep(0.2)
+            else:
+                if skin_engine is None:
+                    raise Exception("Skin retouch engine not initialized")
+                img = skin_engine.retouch(img, skin_strength, detail_size)
+
         # Cache intermediate
         cache[step_hash] = img.copy()
 
@@ -840,6 +852,41 @@ async def deblur_image(session_id: str, index: int, strength: float = 1.0):
     return {"url": _img_to_data_url(result, "JPEG", 90)}
 
 
+@app.post("/api/skin-retouch/{session_id}/{index}")
+async def skin_retouch_image(session_id: str, index: int, strength: float = 0.5):
+    """Smooth skin texture while preserving color. Works on face, arms, legs."""
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    files = session["files"]
+    if index < 0 or index >= len(files):
+        raise HTTPException(404, "Image index out of range")
+
+    file_path = files[index]
+    if not Path(file_path).exists():
+        raise HTTPException(404, f"File no longer exists: {file_path}")
+
+    skin_engine = _sessions.get("__skin_retouch_engine__")
+    mock_mode = _sessions.get("__mock_mode__", True)
+
+    img = Image.open(file_path).convert("RGB")
+
+    if mock_mode:
+        import time
+        time.sleep(0.5)
+        result = img.copy()
+    else:
+        if skin_engine is None:
+            raise HTTPException(500, "Skin retouch engine not initialized")
+        result = skin_engine.retouch(img, strength)
+
+    # Generate preview
+    if max(result.size) > PREVIEW_MAX:
+        result.thumbnail((PREVIEW_MAX, PREVIEW_MAX), Image.LANCZOS)
+    return {"url": _img_to_data_url(result, "JPEG", 90)}
+
+
 @app.get("/api/settings/status")
 async def get_settings_status():
     """Return environment, package, and model weight status."""
@@ -942,19 +989,25 @@ async def get_settings_status():
     # NAFNet denoise/deblur
     try:
         from huggingface_hub import try_to_load_from_cache
-        nafnet_path = try_to_load_from_cache(
-            "piddnad/nafnet-denoise-deblur-weights",
+        denoise_path = try_to_load_from_cache(
+            "jasonzhou2/NAFNet",
             "NAFNet-SIDD-width64.pth",
         )
-        models["nafnet"] = {"name": "NAFNet (Denoise/Deblur)", "size": "~260MB", "downloaded": nafnet_path is not None and nafnet_path != "NOT_FOUND"}
+        deblur_path = try_to_load_from_cache(
+            "jasonzhou2/NAFNet",
+            "NAFNet-GoPro-width64.pth",
+        )
+        both_ok = (denoise_path is not None and denoise_path != "NOT_FOUND"
+                   and deblur_path is not None and deblur_path != "NOT_FOUND")
+        models["nafnet"] = {"name": "NAFNet (Denoise/Deblur)", "size": "~260MB", "downloaded": both_ok}
     except Exception:
         models["nafnet"] = {"name": "NAFNet (Denoise/Deblur)", "size": "~260MB", "downloaded": False}
 
     # Real-ESRGAN upscale
     try:
-        from basicsr.archs.rrdbnet_arch import RRDBNet
+        import realesrgan
         models["realesrgan"] = {"name": "Real-ESRGAN (Upscaling)", "size": "~60MB", "downloaded": True}
-    except Exception:
+    except ImportError:
         models["realesrgan"] = {"name": "Real-ESRGAN (Upscaling)", "size": "~60MB", "downloaded": False}
 
     # Environment info
@@ -1058,14 +1111,14 @@ async def download_model(model_id: str):
                 )
                 q.put(json.dumps({"progress": 1.0, "message": "VAE downloaded", "done": True}))
             elif model_id == "realesrgan":
-                q.put(json.dumps({"progress": 0.5, "message": "Real-ESRGAN downloads on first use"}))
+                q.put(json.dumps({"progress": 0.5, "message": "Real-ESRGAN downloads on first use via pip package"}))
                 q.put(json.dumps({"progress": 1.0, "message": "Real-ESRGAN ready", "done": True}))
             elif model_id == "nafnet":
-                q.put(json.dumps({"progress": 0.1, "message": "Downloading NAFNet weights..."}))
-                snapshot_download(
-                    "piddnad/nafnet-denoise-deblur-weights",
-                    allow_patterns=["*.pth"],
-                )
+                from huggingface_hub import hf_hub_download
+                q.put(json.dumps({"progress": 0.1, "message": "Downloading NAFNet denoise weights..."}))
+                hf_hub_download("jasonzhou2/NAFNet", "NAFNet-SIDD-width64.pth")
+                q.put(json.dumps({"progress": 0.5, "message": "Downloading NAFNet deblur weights..."}))
+                hf_hub_download("jasonzhou2/NAFNet", "NAFNet-GoPro-width64.pth")
                 q.put(json.dumps({"progress": 1.0, "message": "NAFNet downloaded", "done": True}))
             else:
                 q.put(json.dumps({"progress": 1.0, "message": f"Unknown model: {model_id}", "done": True}))
@@ -1085,9 +1138,10 @@ async def download_model(model_id: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-def configure(engine=None, mock_mode=False, upscale_engine=None, restore_engine=None):
+def configure(engine=None, mock_mode=False, upscale_engine=None, restore_engine=None, skin_retouch_engine=None):
     """Set the engine and mock mode for API endpoints."""
     _sessions["__engine__"] = engine
     _sessions["__mock_mode__"] = mock_mode
     _sessions["__upscale_engine__"] = upscale_engine
     _sessions["__restore_engine__"] = restore_engine
+    _sessions["__skin_retouch_engine__"] = skin_retouch_engine

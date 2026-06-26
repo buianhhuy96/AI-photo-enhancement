@@ -138,6 +138,9 @@ export default memo(function ControlPanel({
   const [deblurLevel, setDeblurLevel] = useState(0);
   const [restoreEnabled, setRestoreEnabled] = useState(false);
   const [reflectionEnabled, setReflectionEnabled] = useState(false);
+  const [skinRetouchEnabled, setSkinRetouchEnabled] = useState(false);
+  const [skinRetouchStrength, setSkinRetouchStrength] = useState(0.5);
+  const [skinDetailSize, setSkinDetailSize] = useState(0.01);
   const [pipelineOrder, setPipelineOrder] = useState([]);
 
   const activateStep = (key) => {
@@ -155,6 +158,7 @@ export default memo(function ControlPanel({
     const rEnabled = overrides.resizeEnabled ?? resizeEnabled;
     const refEnabled = overrides.reflectionEnabled ?? reflectionEnabled;
     const rstEnabled = overrides.restoreEnabled ?? restoreEnabled;
+    const skinEnabled = overrides.skinRetouchEnabled ?? skinRetouchEnabled;
     const w = overrides.resizeW ?? resizeW;
     const h = overrides.resizeH ?? resizeH;
     const dStr = overrides.denoiseStrength ?? denoiseStrength;
@@ -162,6 +166,8 @@ export default memo(function ControlPanel({
     const s = overrides.strength ?? strength;
     const dn = overrides.denoiseLevel ?? denoiseLevel;
     const db = overrides.deblurLevel ?? deblurLevel;
+    const skinStr = overrides.skinRetouchStrength ?? skinRetouchStrength;
+    const skinDetail = overrides.skinDetailSize ?? skinDetailSize;
 
     const steps = [];
     for (const key of order) {
@@ -171,12 +177,14 @@ export default memo(function ControlPanel({
         steps.push({ name: 'reflection', params: { quality: q, strength: s, use_4bit: use4bit } });
       } else if (key === 'restore' && rstEnabled) {
         steps.push({ name: 'restore', params: { denoise: dn, deblur: db } });
+      } else if (key === 'skin_retouch' && skinEnabled) {
+        steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail } });
       }
     }
     onPipeline(steps);
-  }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled,
+  }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled,
       resizeW, resizeH, denoiseStrength, quality, strength, use4bit,
-      denoiseLevel, deblurLevel, onPipeline]);
+      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, onPipeline]);
 
   // Reset dimensions when original size changes (image switch)
   useEffect(() => {
@@ -186,6 +194,7 @@ export default memo(function ControlPanel({
       setResizeEnabled(false);
       setReflectionEnabled(false);
       setRestoreEnabled(false);
+      setSkinRetouchEnabled(false);
       setPipelineOrder([]);
     }
   }, [originalSize?.width, originalSize?.height]);
@@ -333,6 +342,41 @@ export default memo(function ControlPanel({
         />
       </ToolSection>
 
+      {/* ═══ Skin Retouch ═══ */}
+      <ToolSection title="Skin Retouch" defaultOpen={true}
+        enabled={skinRetouchEnabled}
+        onToggle={() => {
+          const next = !skinRetouchEnabled;
+          setSkinRetouchEnabled(next);
+          const newOrder = next
+            ? (pipelineOrder.includes('skin_retouch') ? pipelineOrder : [...pipelineOrder, 'skin_retouch'])
+            : pipelineOrder.filter(k => k !== 'skin_retouch');
+          setPipelineOrder(newOrder);
+          runPipeline({ skinRetouchEnabled: next, order: newOrder });
+        }}
+      >
+        <SliderRow
+          label="Smoothing"
+          value={skinRetouchStrength}
+          min={0} max={1} step={0.05}
+          onChange={(v) => {
+            setSkinRetouchStrength(v);
+            if (skinRetouchEnabled) runPipeline({ skinRetouchStrength: v });
+          }}
+          displayValue={`${Math.round(skinRetouchStrength * 100)}%`}
+        />
+        <SliderRow
+          label="Detail Size"
+          value={skinDetailSize}
+          min={0.001} max={0.02} step={0.001}
+          onChange={(v) => {
+            setSkinDetailSize(v);
+            if (skinRetouchEnabled) runPipeline({ skinDetailSize: v });
+          }}
+          displayValue={`${(skinDetailSize * 100).toFixed(1)}%`}
+        />
+      </ToolSection>
+
       {/* ═══ Denoise & Deblur ═══ */}
       <ToolSection title="Denoise / Deblur" defaultOpen={true}
         enabled={restoreEnabled}
@@ -383,6 +427,7 @@ export default memo(function ControlPanel({
                   resize: { label: 'Resize', color: '#6366f1' },
                   restore: { label: 'Denoise / Deblur', color: '#10b981' },
                   reflection: { label: 'Reflection', color: '#f59e0b' },
+                  skin_retouch: { label: 'Skin Retouch', color: '#ec4899' },
                 };
                 const activeSteps = pipelineOrder
                   .map((key) => stepMap[key] ? { ...stepMap[key], key } : null)
