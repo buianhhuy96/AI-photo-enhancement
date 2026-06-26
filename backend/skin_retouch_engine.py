@@ -192,34 +192,35 @@ class SkinRetouchEngine:
 
         A_masked = A * mask
         B_masked = B * mask
+        L_masked = L * mask
         A_smooth = cv2.GaussianBlur(A_masked, (blur_size, blur_size), sigma) / mask_blur
         B_smooth = cv2.GaussianBlur(B_masked, (blur_size, blur_size), sigma) / mask_blur
+        L_smooth = cv2.GaussianBlur(L_masked, (blur_size, blur_size), sigma) / mask_blur
 
         # Second pass at high strength for more aggressive smoothing
         if strength > 0.5:
             A_smooth2 = A_smooth * mask
             B_smooth2 = B_smooth * mask
+            L_smooth2 = L_smooth * mask
             A_smooth = cv2.GaussianBlur(A_smooth2, (blur_size, blur_size), sigma) / mask_blur
             B_smooth = cv2.GaussianBlur(B_smooth2, (blur_size, blur_size), sigma) / mask_blur
+            L_smooth = cv2.GaussianBlur(L_smooth2, (blur_size, blur_size), sigma) / mask_blur
 
-        # Blend into skin regions
+        # Blend chrominance fully into skin regions
         A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
         B_result = B * (1 - strength * mask) + B_smooth * (strength * mask)
+
+        # Blend luminance at reduced strength to preserve face shape/shadows
+        # but still reduce dark marks. Use frequency separation:
+        # keep low-freq (face contours) + high-freq (pores), remove mid-freq (blemishes)
+        lum_strength = strength * 0.6  # less aggressive than chrominance
+        L_result = L * (1 - lum_strength * mask) + L_smooth * (lum_strength * mask)
+
         print(f"[skin_retouch] A diff: mean={np.abs(A_result - A).mean():.2f}, max={np.abs(A_result - A).max():.2f}")
         print(f"[skin_retouch] B diff: mean={np.abs(B_result - B).mean():.2f}, max={np.abs(B_result - B).max():.2f}")
+        print(f"[skin_retouch] L diff: mean={np.abs(L_result - L).mean():.2f}, max={np.abs(L_result - L).max():.2f}")
 
-        # Step 4: Optional light luminance smoothing at high strength
-        texture_strength = max(0, (strength - 0.5) * 0.4)
-        if texture_strength > 0:
-            l_radius = max(3, radius // 2)
-            if l_radius % 2 == 0:
-                l_radius += 1
-            L_smooth = self._guided_filter(L / 255.0, L, l_radius, 2.0)
-            L_result = L * (1 - texture_strength * mask) + L_smooth * (texture_strength * mask)
-        else:
-            L_result = L
-
-        # Step 5: Recombine and convert back
+        # Step 4: Recombine and convert back
         result_lab = np.stack([L_result, A_result, B_result], axis=-1)
         result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
         result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
