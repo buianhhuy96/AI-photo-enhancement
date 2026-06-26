@@ -1010,6 +1010,17 @@ async def get_settings_status():
     except ImportError:
         models["realesrgan"] = {"name": "Real-ESRGAN (Upscaling)", "size": "~60MB", "downloaded": False}
 
+    # Face parsing (Skin Retouch)
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        fp_path = try_to_load_from_cache(
+            "jonathandinu/face-parsing",
+            "model.safetensors",
+        )
+        models["face_parsing"] = {"name": "Face Parsing (Skin Retouch)", "size": "~170MB", "downloaded": fp_path is not None and fp_path != "NOT_FOUND"}
+    except Exception:
+        models["face_parsing"] = {"name": "Face Parsing (Skin Retouch)", "size": "~170MB", "downloaded": False}
+
     # Environment info
     env = {
         "python_version": sys.version.split()[0],
@@ -1120,6 +1131,13 @@ async def download_model(model_id: str):
                 q.put(json.dumps({"progress": 0.5, "message": "Downloading NAFNet deblur weights..."}))
                 hf_hub_download("jasonzhou2/NAFNet", "NAFNet-GoPro-width64.pth")
                 q.put(json.dumps({"progress": 1.0, "message": "NAFNet downloaded", "done": True}))
+            elif model_id == "face_parsing":
+                q.put(json.dumps({"progress": 0.1, "message": "Downloading Face Parsing model..."}))
+                snapshot_download(
+                    "jonathandinu/face-parsing",
+                    allow_patterns=["*.safetensors", "*.json", "*.txt"],
+                )
+                q.put(json.dumps({"progress": 1.0, "message": "Face Parsing model downloaded", "done": True}))
             else:
                 q.put(json.dumps({"progress": 1.0, "message": f"Unknown model: {model_id}", "done": True}))
         except Exception as e:

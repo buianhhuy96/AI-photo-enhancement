@@ -1,43 +1,119 @@
-"""Skin retouching engine — blemish removal via chrominance smoothing in LAB space."""
+"""Skin retouching engine — AI face parsing + LAB chrominance smoothing."""
 import numpy as np
 from PIL import Image
 
 
 class SkinRetouchEngine:
-    """Remove blemishes and even skin tone while preserving texture."""
+    """Remove blemishes and even skin tone using AI segmentation + LAB processing."""
+
+    def __init__(self):
+        self._model = None
+        self._processor = None
+        self._device = None
+
+    def _get_device(self):
+        if self._device is None:
+            import torch
+            self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        return self._device
+
+    def _ensure_model(self):
+        """Load the face parsing model (SegFormer, ~170MB in float16)."""
+        if self._model is not None:
+            return
+        import torch
+        from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+
+        self._processor = SegformerImageProcessor.from_pretrained("jonathandinu/face-parsing")
+        self._model = SegformerForSemanticSegmentation.from_pretrained(
+            "jonathandinu/face-parsing", torch_dtype=torch.float16
+        )
+        self._model.to(self._get_device())
+        self._model.eval()
+
+    def _detect_skin_ai(self, img):
+        """Detect skin using AI face parsing model.
+
+        Returns a float mask (H, W) where 1.0 = skin area.
+        Includes: skin, nose, neck (labels 1, 2, 17).
+        Excludes: eyes, eyebrows, lips, hair, glasses, ears.
+        """
+        import torch
+        from torch import nn
+
+        self._ensure_model()
+        device = self._get_device()
+
+        inputs = self._processor(images=img, return_tensors="pt").to(device, torch.float16)
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+
+        logits = outputs.logits  # (1, num_labels, H/4, W/4)
+
+        # Resize to original image dimensions
+        upsampled = nn.functional.interpolate(
+            logits, size=(img.height, img.width),
+            mode='bilinear', align_corners=False,
+        )
+        labels = upsampled.argmax(dim=1)[0].cpu().numpy()  # (H, W)
+
+        # Skin-related labels: 1=skin, 2=nose, 17=neck
+        skin_labels = {1, 2, 17}
+        mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
+
+        return mask
 
     def _detect_skin_color(self, img_array):
-        """Detect skin using YCrCb + HSV color space thresholding.
-
-        Works on face, arms, legs — any exposed skin regardless of body part.
-        """
+        """Fallback: detect skin using color thresholding for body areas (arms/legs)."""
         import cv2
 
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        # YCrCb detection (most robust for skin across ethnicities)
+        # YCrCb detection — wide range for diverse skin tones
         ycrcb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
-        mask_ycrcb = cv2.inRange(ycrcb, np.array([50, 133, 77]), np.array([255, 173, 127]))
+        mask_ycrcb = cv2.inRange(ycrcb, np.array([40, 125, 75]), np.array([255, 180, 135]))
 
-        # HSV detection (catches additional skin tones)
+        # HSV detection
         hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-        mask_hsv = cv2.inRange(hsv, np.array([0, 20, 70]), np.array([30, 180, 255]))
+        mask_hsv = cv2.inRange(hsv, np.array([0, 10, 60]), np.array([35, 200, 255]))
 
-        # Union of both detections for better coverage
         mask = cv2.bitwise_or(mask_ycrcb, mask_hsv)
 
-        # Morphological cleanup: remove noise, fill small holes
+        # Cleanup
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        return mask
+
+    def _build_skin_mask(self, img, img_array):
+        """Build combined skin mask: AI face parsing + color-based body detection."""
+        import cv2
+
+        # AI face parsing (precise for face/neck)
+        ai_mask = self._detect_skin_ai(img)
+
+        # Color-based detection (catches body skin: arms, legs, chest)
+        color_mask = self._detect_skin_color(img_array)
+
+        # Union: AI mask covers face precisely, color mask adds body areas
+        combined = cv2.bitwise_or(ai_mask, color_mask)
+
+        # Dilate to cover blemishes that were rejected by both detectors
+        short_edge = min(img_array.shape[0], img_array.shape[1])
+        dilate_size = max(7, int(short_edge * 0.025))
+        if dilate_size % 2 == 0:
+            dilate_size += 1
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
+        combined = cv2.dilate(combined, dilate_kernel, iterations=1)
 
         # Smooth edges for natural blending
-        mask = cv2.GaussianBlur(mask, (7, 7), 0)
+        combined = cv2.GaussianBlur(combined, (7, 7), 0)
 
-        return mask.astype(np.float32) / 255.0
+        return combined.astype(np.float32) / 255.0
 
     def _guided_filter(self, guide, src, radius, eps):
-        """Edge-preserving guided filter (O(n) box filter implementation)."""
+        """Edge-preserving guided filter for optional texture smoothing."""
         import cv2
 
         guide = guide.astype(np.float32)
@@ -60,21 +136,18 @@ class SkinRetouchEngine:
         return mean_a * guide + mean_b
 
     def retouch(self, img, strength=0.5, detail_size=0.01):
-        """Retouch skin: remove blemishes (color anomalies) and optionally smooth texture.
+        """Retouch skin: remove blemishes and even tone while preserving texture.
 
-        Works in LAB color space:
-        - Smooths A/B channels (chrominance) to remove colored blemishes (red marks,
-          brown spots, uneven tone) while keeping ALL luminance texture (pores).
-        - At higher strength, lightly smooths L channel for subtle texture softening.
+        Uses AI face parsing for precise skin detection, then smooths chrominance
+        (color) in LAB space to remove colored blemishes without affecting texture.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = maximum blemish removal + light texture smoothing.
+            strength: 0.0 = no change, 1.0 = maximum blemish removal.
             detail_size: Radius as fraction of image short edge (0.001–0.02).
-                         Controls the scale of color anomalies to target.
 
         Returns:
-            Retouched PIL Image (RGB). Skin texture preserved.
+            Retouched PIL Image (RGB).
         """
         import cv2
 
@@ -87,13 +160,11 @@ class SkinRetouchEngine:
         # Adaptive radius based on image resolution
         short_edge = min(img_array.shape[0], img_array.shape[1])
         radius = max(3, int(short_edge * detail_size))
-        # Ensure odd kernel size for boxFilter
         if radius % 2 == 0:
             radius += 1
 
-        # Step 1: Detect skin regions
-        skin_mask = self._detect_skin_color(img_array)
-        mask = skin_mask  # (H, W) float 0-1
+        # Step 1: AI skin detection
+        mask = self._build_skin_mask(img, img_array)
 
         # Step 2: Convert to LAB
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
@@ -101,21 +172,25 @@ class SkinRetouchEngine:
         A = img_lab[:, :, 1]
         B = img_lab[:, :, 2]
 
-        # Step 3: Smooth chrominance channels (A and B) — removes colored blemishes
-        # Use guided filter with L as guide to preserve edges at skin/non-skin boundaries
-        eps_color = 0.5  # Low eps = stronger smoothing of color
-        A_smooth = self._guided_filter(L / 255.0, A, radius, eps_color)
-        B_smooth = self._guided_filter(L / 255.0, B, radius, eps_color)
+        # Step 3: Smooth chrominance (removes colored blemishes)
+        blur_size = radius * 2 + 1
+        sigma = radius * 0.8
 
-        # Blend smoothed chrominance into skin regions based on strength
+        A_smooth = cv2.GaussianBlur(A, (blur_size, blur_size), sigma)
+        B_smooth = cv2.GaussianBlur(B, (blur_size, blur_size), sigma)
+
+        # Second pass at high strength
+        if strength > 0.5:
+            A_smooth = cv2.GaussianBlur(A_smooth, (blur_size, blur_size), sigma)
+            B_smooth = cv2.GaussianBlur(B_smooth, (blur_size, blur_size), sigma)
+
+        # Blend into skin regions
         A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
         B_result = B * (1 - strength * mask) + B_smooth * (strength * mask)
 
-        # Step 4: Optional light luminance smoothing at high strength (>0.5)
-        # This gives subtle texture softening without destroying pores
-        texture_strength = max(0, (strength - 0.5) * 0.4)  # 0 at strength=0.5, 0.2 at strength=1.0
+        # Step 4: Optional light luminance smoothing at high strength
+        texture_strength = max(0, (strength - 0.5) * 0.4)
         if texture_strength > 0:
-            # Use smaller radius for L to preserve structure
             l_radius = max(3, radius // 2)
             if l_radius % 2 == 0:
                 l_radius += 1
