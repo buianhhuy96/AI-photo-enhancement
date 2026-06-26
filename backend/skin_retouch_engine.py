@@ -181,17 +181,26 @@ class SkinRetouchEngine:
         B = img_lab[:, :, 2]
 
         # Step 3: Smooth chrominance (removes colored blemishes)
-        # Large kernel is safe because L-channel (texture) is untouched.
+        # Use masked blur: only average chrominance from skin pixels.
+        # This prevents non-skin colors (hair, background) bleeding in.
+        # Formula: smooth = Blur(channel * mask) / Blur(mask)
         blur_size = radius * 2 + 1
-        sigma = radius * 0.5  # Let Gaussian spread across the full kernel
+        sigma = radius * 0.5
 
-        A_smooth = cv2.GaussianBlur(A, (blur_size, blur_size), sigma)
-        B_smooth = cv2.GaussianBlur(B, (blur_size, blur_size), sigma)
+        mask_blur = cv2.GaussianBlur(mask, (blur_size, blur_size), sigma)
+        mask_blur = np.maximum(mask_blur, 1e-6)  # avoid division by zero
 
-        # Second pass at high strength
+        A_masked = A * mask
+        B_masked = B * mask
+        A_smooth = cv2.GaussianBlur(A_masked, (blur_size, blur_size), sigma) / mask_blur
+        B_smooth = cv2.GaussianBlur(B_masked, (blur_size, blur_size), sigma) / mask_blur
+
+        # Second pass at high strength for more aggressive smoothing
         if strength > 0.5:
-            A_smooth = cv2.GaussianBlur(A_smooth, (blur_size, blur_size), sigma)
-            B_smooth = cv2.GaussianBlur(B_smooth, (blur_size, blur_size), sigma)
+            A_smooth2 = A_smooth * mask
+            B_smooth2 = B_smooth * mask
+            A_smooth = cv2.GaussianBlur(A_smooth2, (blur_size, blur_size), sigma) / mask_blur
+            B_smooth = cv2.GaussianBlur(B_smooth2, (blur_size, blur_size), sigma) / mask_blur
 
         # Blend into skin regions
         A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
