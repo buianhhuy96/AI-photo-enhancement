@@ -18,7 +18,7 @@ class SkinRetouchEngine:
         return self._device
 
     def _ensure_model(self):
-        """Load the face parsing model (SegFormer, ~170MB in float16)."""
+        """Load the face parsing model (SegFormer, ~84M params)."""
         if self._model is not None:
             return
         import torch
@@ -26,7 +26,7 @@ class SkinRetouchEngine:
 
         self._processor = SegformerImageProcessor.from_pretrained("jonathandinu/face-parsing")
         self._model = SegformerForSemanticSegmentation.from_pretrained(
-            "jonathandinu/face-parsing", torch_dtype=torch.float16
+            "jonathandinu/face-parsing",
         )
         self._model.to(self._get_device())
         self._model.eval()
@@ -44,7 +44,7 @@ class SkinRetouchEngine:
         self._ensure_model()
         device = self._get_device()
 
-        inputs = self._processor(images=img, return_tensors="pt").to(device, torch.float16)
+        inputs = self._processor(images=img, return_tensors="pt").to(device)
         with torch.no_grad():
             outputs = self._model(**inputs)
 
