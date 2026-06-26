@@ -165,6 +165,10 @@ class SkinRetouchEngine:
 
         # Step 1: AI skin detection
         mask = self._build_skin_mask(img, img_array)
+        print(f"[skin_retouch] mask stats: min={mask.min():.3f}, max={mask.max():.3f}, "
+              f"mean={mask.mean():.3f}, nonzero={np.count_nonzero(mask > 0.1)}/{mask.size}")
+        print(f"[skin_retouch] strength={strength}, detail_size={detail_size}, "
+              f"radius={radius}, blur_size={radius*2+1}, sigma={radius*0.8:.1f}")
 
         # Step 2: Convert to LAB
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
@@ -187,6 +191,8 @@ class SkinRetouchEngine:
         # Blend into skin regions
         A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
         B_result = B * (1 - strength * mask) + B_smooth * (strength * mask)
+        print(f"[skin_retouch] A diff: mean={np.abs(A_result - A).mean():.2f}, max={np.abs(A_result - A).max():.2f}")
+        print(f"[skin_retouch] B diff: mean={np.abs(B_result - B).mean():.2f}, max={np.abs(B_result - B).max():.2f}")
 
         # Step 4: Optional light luminance smoothing at high strength
         texture_strength = max(0, (strength - 0.5) * 0.4)
