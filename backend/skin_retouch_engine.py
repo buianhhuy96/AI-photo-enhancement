@@ -135,7 +135,7 @@ class SkinRetouchEngine:
 
         return mean_a * guide + mean_b
 
-    def retouch(self, img, strength=0.5, detail_size=0.01):
+    def retouch(self, img, strength=0.5, detail_size=0.05):
         """Retouch skin: remove blemishes and even tone while preserving texture.
 
         Uses AI face parsing for precise skin detection, then smooths chrominance
@@ -144,7 +144,8 @@ class SkinRetouchEngine:
         Args:
             img: Input PIL Image (RGB).
             strength: 0.0 = no change, 1.0 = maximum blemish removal.
-            detail_size: Radius as fraction of image short edge (0.001–0.02).
+            detail_size: Blur radius as fraction of image short edge (0.02–0.15).
+                         Larger = smooths bigger blemishes but may look unnatural.
 
         Returns:
             Retouched PIL Image (RGB).
@@ -158,8 +159,11 @@ class SkinRetouchEngine:
         img_array = np.array(img)
 
         # Adaptive radius based on image resolution
+        # Blemishes are typically 1-5% of face width; need blur much larger than
+        # blemish size to average them against surrounding healthy skin.
+        # Since L-channel preserves all texture, large A/B blur is safe.
         short_edge = min(img_array.shape[0], img_array.shape[1])
-        radius = max(3, int(short_edge * detail_size))
+        radius = max(11, int(short_edge * detail_size))
         if radius % 2 == 0:
             radius += 1
 
@@ -177,8 +181,9 @@ class SkinRetouchEngine:
         B = img_lab[:, :, 2]
 
         # Step 3: Smooth chrominance (removes colored blemishes)
+        # Large kernel is safe because L-channel (texture) is untouched.
         blur_size = radius * 2 + 1
-        sigma = radius * 0.8
+        sigma = radius * 0.5  # Let Gaussian spread across the full kernel
 
         A_smooth = cv2.GaussianBlur(A, (blur_size, blur_size), sigma)
         B_smooth = cv2.GaussianBlur(B, (blur_size, blur_size), sigma)
