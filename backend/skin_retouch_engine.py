@@ -1,27 +1,15 @@
-"""Skin retouching engine using frequency separation with automatic skin detection."""
+"""Skin retouching engine — blemish removal via chrominance smoothing in LAB space."""
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 
 class SkinRetouchEngine:
-    """Smooth skin texture while preserving color and non-skin areas."""
-
-    def __init__(self):
-        self._seg_model = None
-        self._seg_processor = None
-        self._device = None
-
-    def _get_device(self):
-        if self._device is None:
-            import torch
-            self._device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        return self._device
+    """Remove blemishes and even skin tone while preserving texture."""
 
     def _detect_skin_color(self, img_array):
         """Detect skin using YCrCb + HSV color space thresholding.
 
         Works on face, arms, legs — any exposed skin regardless of body part.
-        Handles a wide range of skin tones.
         """
         import cv2
 
@@ -49,10 +37,7 @@ class SkinRetouchEngine:
         return mask.astype(np.float32) / 255.0
 
     def _guided_filter(self, guide, src, radius, eps):
-        """Edge-preserving guided filter (O(n) box filter implementation).
-
-        Smooths src while respecting edges in guide.
-        """
+        """Edge-preserving guided filter (O(n) box filter implementation)."""
         import cv2
 
         guide = guide.astype(np.float32)
@@ -74,35 +59,25 @@ class SkinRetouchEngine:
 
         return mean_a * guide + mean_b
 
-    def _frequency_separation(self, img_array, radius=12, eps=0.02):
-        """Split image into low-frequency (color/shape) and high-frequency (texture).
-
-        Uses guided filter for edge-preserving decomposition.
-        """
-        img_float = img_array.astype(np.float32) / 255.0
-
-        # Process each channel
-        low_freq = np.zeros_like(img_float)
-        for c in range(3):
-            low_freq[:, :, c] = self._guided_filter(
-                img_float[:, :, c], img_float[:, :, c], radius, eps
-            )
-
-        high_freq = img_float - low_freq
-        return low_freq, high_freq
-
     def retouch(self, img, strength=0.5, detail_size=0.01):
-        """Retouch skin in a PIL Image.
+        """Retouch skin: remove blemishes (color anomalies) and optionally smooth texture.
+
+        Works in LAB color space:
+        - Smooths A/B channels (chrominance) to remove colored blemishes (red marks,
+          brown spots, uneven tone) while keeping ALL luminance texture (pores).
+        - At higher strength, lightly smooths L channel for subtle texture softening.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = maximum smoothing.
+            strength: 0.0 = no change, 1.0 = maximum blemish removal + light texture smoothing.
             detail_size: Radius as fraction of image short edge (0.001–0.02).
-                         Smaller = fine pores only, larger = broader smoothing.
+                         Controls the scale of color anomalies to target.
 
         Returns:
-            Retouched PIL Image (RGB). Color is preserved exactly.
+            Retouched PIL Image (RGB). Skin texture preserved.
         """
+        import cv2
+
         if strength <= 0:
             return img.copy()
 
@@ -112,22 +87,46 @@ class SkinRetouchEngine:
         # Adaptive radius based on image resolution
         short_edge = min(img_array.shape[0], img_array.shape[1])
         radius = max(3, int(short_edge * detail_size))
+        # Ensure odd kernel size for boxFilter
+        if radius % 2 == 0:
+            radius += 1
 
         # Step 1: Detect skin regions
         skin_mask = self._detect_skin_color(img_array)
+        mask = skin_mask  # (H, W) float 0-1
 
-        # Step 2: Frequency separation
-        eps = 0.01 + (1.0 - strength) * 0.04  # Lower eps = more smoothing
-        low_freq, high_freq = self._frequency_separation(img_array, radius=radius, eps=eps)
+        # Step 2: Convert to LAB
+        img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
+        L = img_lab[:, :, 0]
+        A = img_lab[:, :, 1]
+        B = img_lab[:, :, 2]
 
-        # Step 3: Suppress high-frequency detail in skin areas
-        # mask shape: (H, W) -> (H, W, 1) for broadcasting
-        mask_3d = skin_mask[:, :, np.newaxis]
+        # Step 3: Smooth chrominance channels (A and B) — removes colored blemishes
+        # Use guided filter with L as guide to preserve edges at skin/non-skin boundaries
+        eps_color = 0.5  # Low eps = stronger smoothing of color
+        A_smooth = self._guided_filter(L / 255.0, A, radius, eps_color)
+        B_smooth = self._guided_filter(L / 255.0, B, radius, eps_color)
 
-        # Blend: keep full high-freq outside skin, reduce inside skin
-        suppression = strength * mask_3d
-        result = low_freq + high_freq * (1.0 - suppression)
+        # Blend smoothed chrominance into skin regions based on strength
+        A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
+        B_result = B * (1 - strength * mask) + B_smooth * (strength * mask)
 
-        # Convert back to uint8
-        result = np.clip(result * 255, 0, 255).astype(np.uint8)
-        return Image.fromarray(result)
+        # Step 4: Optional light luminance smoothing at high strength (>0.5)
+        # This gives subtle texture softening without destroying pores
+        texture_strength = max(0, (strength - 0.5) * 0.4)  # 0 at strength=0.5, 0.2 at strength=1.0
+        if texture_strength > 0:
+            # Use smaller radius for L to preserve structure
+            l_radius = max(3, radius // 2)
+            if l_radius % 2 == 0:
+                l_radius += 1
+            L_smooth = self._guided_filter(L / 255.0, L, l_radius, 2.0)
+            L_result = L * (1 - texture_strength * mask) + L_smooth * (texture_strength * mask)
+        else:
+            L_result = L
+
+        # Step 5: Recombine and convert back
+        result_lab = np.stack([L_result, A_result, B_result], axis=-1)
+        result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
+        result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
+
+        return Image.fromarray(result_rgb)

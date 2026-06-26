@@ -356,7 +356,7 @@ export default memo(function ControlPanel({
         }}
       >
         <SliderRow
-          label="Smoothing"
+          label="Blemish"
           value={skinRetouchStrength}
           min={0} max={1} step={0.05}
           onChange={(v) => {
