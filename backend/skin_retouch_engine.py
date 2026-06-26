@@ -271,3 +271,65 @@ class SkinRetouchEngine:
 
         result_rgb = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(result_rgb)
+
+    def even_tone(self, img, strength=0.5):
+        """Even out skin tone by smoothing chrominance (color) variations.
+
+        Reduces red patches, uneven pigmentation, and blotchiness while
+        preserving all texture (pores, fine lines) via untouched L-channel.
+
+        Args:
+            img: Input PIL Image (RGB).
+            strength: 0.0 = no change, 1.0 = fully evened tone.
+
+        Returns:
+            Tone-evened PIL Image (RGB).
+        """
+        import cv2
+
+        if strength <= 0:
+            return img.copy()
+
+        strength = min(strength, 1.0)
+        img_array = np.array(img)
+        h, w = img_array.shape[:2]
+        short_edge = min(h, w)
+
+        # Build skin mask (reuse face parsing)
+        skin_mask, _ = self._build_skin_mask(img, img_array)
+        mask_f = (skin_mask / 255.0).astype(np.float32)
+
+        # Convert to LAB
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        img_lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        L = img_lab[:, :, 0]
+        A = img_lab[:, :, 1]
+        B = img_lab[:, :, 2]
+
+        # Large blur radius for tone evening (8-12% of short edge)
+        radius = max(15, int(short_edge * 0.10))
+        if radius % 2 == 0:
+            radius += 1
+        blur_size = radius * 2 + 1
+        sigma = radius * 0.4
+
+        # Masked blur: only average skin chrominance (not hair/background)
+        mask_blur = cv2.GaussianBlur(mask_f, (blur_size, blur_size), sigma)
+        mask_blur = np.maximum(mask_blur, 1e-6)
+
+        A_smooth = cv2.GaussianBlur(A * mask_f, (blur_size, blur_size), sigma) / mask_blur
+        B_smooth = cv2.GaussianBlur(B * mask_f, (blur_size, blur_size), sigma) / mask_blur
+
+        # Blend chrominance toward local average (evens tone)
+        A_result = A * (1 - strength * mask_f) + A_smooth * (strength * mask_f)
+        B_result = B * (1 - strength * mask_f) + B_smooth * (strength * mask_f)
+
+        # L-channel untouched — all texture preserved
+        result_lab = np.stack([L, A_result, B_result], axis=-1)
+        result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
+        result_bgr = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
+
+        print(f"[skin_tone] A diff: mean={np.abs(A_result - A).mean():.2f}, max={np.abs(A_result - A).max():.2f}")
+        print(f"[skin_tone] B diff: mean={np.abs(B_result - B).mean():.2f}, max={np.abs(B_result - B).max():.2f}")
+
+        return Image.fromarray(result_bgr)

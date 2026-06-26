@@ -141,6 +141,8 @@ export default memo(function ControlPanel({
   const [skinRetouchEnabled, setSkinRetouchEnabled] = useState(false);
   const [skinRetouchStrength, setSkinRetouchStrength] = useState(0.5);
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
+  const [skinToneEnabled, setSkinToneEnabled] = useState(false);
+  const [skinToneStrength, setSkinToneStrength] = useState(0.5);
   const [pipelineOrder, setPipelineOrder] = useState([]);
 
   const activateStep = (key) => {
@@ -159,6 +161,7 @@ export default memo(function ControlPanel({
     const refEnabled = overrides.reflectionEnabled ?? reflectionEnabled;
     const rstEnabled = overrides.restoreEnabled ?? restoreEnabled;
     const skinEnabled = overrides.skinRetouchEnabled ?? skinRetouchEnabled;
+    const toneEnabled = overrides.skinToneEnabled ?? skinToneEnabled;
     const w = overrides.resizeW ?? resizeW;
     const h = overrides.resizeH ?? resizeH;
     const dStr = overrides.denoiseStrength ?? denoiseStrength;
@@ -168,6 +171,7 @@ export default memo(function ControlPanel({
     const db = overrides.deblurLevel ?? deblurLevel;
     const skinStr = overrides.skinRetouchStrength ?? skinRetouchStrength;
     const skinDetail = overrides.skinDetailSize ?? skinDetailSize;
+    const toneStr = overrides.skinToneStrength ?? skinToneStrength;
 
     const steps = [];
     for (const key of order) {
@@ -179,12 +183,14 @@ export default memo(function ControlPanel({
         steps.push({ name: 'restore', params: { denoise: dn, deblur: db } });
       } else if (key === 'skin_retouch' && skinEnabled) {
         steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail } });
+      } else if (key === 'skin_tone' && toneEnabled) {
+        steps.push({ name: 'skin_tone', params: { strength: toneStr } });
       }
     }
     onPipeline(steps);
-  }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled,
+  }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled, skinToneEnabled,
       resizeW, resizeH, denoiseStrength, quality, strength, use4bit,
-      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, onPipeline]);
+      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinToneStrength, onPipeline]);
 
   // Reset dimensions when original size changes (image switch)
   useEffect(() => {
@@ -195,6 +201,7 @@ export default memo(function ControlPanel({
       setReflectionEnabled(false);
       setRestoreEnabled(false);
       setSkinRetouchEnabled(false);
+      setSkinToneEnabled(false);
       setPipelineOrder([]);
     }
   }, [originalSize?.width, originalSize?.height]);
@@ -377,6 +384,31 @@ export default memo(function ControlPanel({
         />
       </ToolSection>
 
+      {/* ═══ Skin Tone ═══ */}
+      <ToolSection title="Skin Tone" defaultOpen={true}
+        enabled={skinToneEnabled}
+        onToggle={() => {
+          const next = !skinToneEnabled;
+          setSkinToneEnabled(next);
+          const newOrder = next
+            ? (pipelineOrder.includes('skin_tone') ? pipelineOrder : [...pipelineOrder, 'skin_tone'])
+            : pipelineOrder.filter(k => k !== 'skin_tone');
+          setPipelineOrder(newOrder);
+          runPipeline({ skinToneEnabled: next, order: newOrder });
+        }}
+      >
+        <SliderRow
+          label="Evenness"
+          value={skinToneStrength}
+          min={0} max={1} step={0.05}
+          onChange={(v) => {
+            setSkinToneStrength(v);
+            if (skinToneEnabled) runPipeline({ skinToneStrength: v });
+          }}
+          displayValue={`${Math.round(skinToneStrength * 100)}%`}
+        />
+      </ToolSection>
+
       {/* ═══ Denoise & Deblur ═══ */}
       <ToolSection title="Denoise / Deblur" defaultOpen={true}
         enabled={restoreEnabled}
@@ -428,6 +460,7 @@ export default memo(function ControlPanel({
                   restore: { label: 'Denoise / Deblur', color: '#10b981' },
                   reflection: { label: 'Reflection', color: '#f59e0b' },
                   skin_retouch: { label: 'Skin Retouch', color: '#ec4899' },
+                  skin_tone: { label: 'Skin Tone', color: '#a855f7' },
                 };
                 const activeSteps = pipelineOrder
                   .map((key) => stepMap[key] ? { ...stepMap[key], key } : null)
