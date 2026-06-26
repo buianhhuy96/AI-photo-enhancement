@@ -34,8 +34,10 @@ class SkinRetouchEngine:
     def _detect_skin_ai(self, img):
         """Detect skin using AI face parsing model.
 
-        Returns a binary mask (H, W) uint8 where 255 = skin area.
-        Includes: skin, nose, neck (labels 1, 2, 17).
+        Returns:
+            skin_mask: Binary mask (H, W) uint8 where 255 = skin area.
+            protect_mask: Binary mask (H, W) uint8 where 255 = protected area
+                          (eyes, eyebrows, lips, hair, ears) that must NOT be inpainted.
         """
         import torch
         from torch import nn
@@ -55,10 +57,18 @@ class SkinRetouchEngine:
         )
         labels = upsampled.argmax(dim=1)[0].cpu().numpy()
 
+        # jonathandinu/face-parsing labels (CelebAMask-HQ):
+        # 0=background, 1=skin, 2=nose, 3=eye_glasses, 4=l_eye, 5=r_eye,
+        # 6=l_brow, 7=r_brow, 8=l_ear, 9=r_ear, 10=mouth, 11=u_lip,
+        # 12=l_lip, 13=hair, 14=hat, 15=earring, 16=necklace, 17=neck, 18=cloth
         skin_labels = {1, 2, 17}
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
-        return mask
+        # Protected zones: eyes, eyebrows, lips, mouth, hair, ears, glasses
+        protect_labels = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
+        protect_mask = np.isin(labels, list(protect_labels)).astype(np.uint8) * 255
+
+        return mask, protect_mask
 
     def _detect_skin_color(self, img_array):
         """Fallback: detect skin using color thresholding for body areas."""
@@ -81,10 +91,15 @@ class SkinRetouchEngine:
         return mask
 
     def _build_skin_mask(self, img, img_array):
-        """Build combined skin mask: AI face parsing + color-based body detection."""
+        """Build combined skin mask: AI face parsing + color-based body detection.
+
+        Returns:
+            skin_mask: Where blemishes can exist (uint8, 255=skin).
+            protect_mask: Where inpainting must NOT touch (uint8, 255=protected).
+        """
         import cv2
 
-        ai_mask = self._detect_skin_ai(img)
+        ai_mask, protect_mask = self._detect_skin_ai(img)
         color_mask = self._detect_skin_color(img_array)
         combined = cv2.bitwise_or(ai_mask, color_mask)
 
@@ -96,7 +111,17 @@ class SkinRetouchEngine:
         dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
         combined = cv2.dilate(combined, dilate_kernel, iterations=1)
 
-        return combined
+        # Dilate protection zone to create safety buffer around eyes/lips/hair
+        protect_dilate = max(5, int(short_edge * 0.015))
+        if protect_dilate % 2 == 0:
+            protect_dilate += 1
+        protect_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (protect_dilate, protect_dilate))
+        protect_mask = cv2.dilate(protect_mask, protect_kernel, iterations=1)
+
+        # Remove protected areas from skin mask
+        combined = cv2.bitwise_and(combined, cv2.bitwise_not(protect_mask))
+
+        return combined, protect_mask
 
     def _detect_blemishes(self, img_array, skin_mask, sensitivity=0.5):
         """Detect individual blemish spots within the skin mask.
@@ -209,8 +234,8 @@ class SkinRetouchEngine:
         h, w = img_array.shape[:2]
         short_edge = min(h, w)
 
-        # Step 1: AI skin detection
-        skin_mask = self._build_skin_mask(img, img_array)
+        # Step 1: AI skin detection (with protected zones)
+        skin_mask, protect_mask = self._build_skin_mask(img, img_array)
 
         # Step 2: Detect individual blemishes within skin
         sensitivity = min(detail_size / 0.15, 1.0)  # normalize to 0-1
