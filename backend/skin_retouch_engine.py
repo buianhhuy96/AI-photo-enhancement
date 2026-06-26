@@ -2,6 +2,12 @@
 import numpy as np
 from PIL import Image
 
+# Fix compatibility: basicsr imports removed torchvision.transforms.functional_tensor
+import torchvision.transforms.functional as _F
+import sys
+if "torchvision.transforms.functional_tensor" not in sys.modules:
+    sys.modules["torchvision.transforms.functional_tensor"] = _F
+
 
 class SkinRetouchEngine:
     """Remove blemishes using GFPGAN to regenerate skin, masked by face parsing."""
