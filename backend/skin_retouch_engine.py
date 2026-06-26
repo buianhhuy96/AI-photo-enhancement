@@ -174,14 +174,15 @@ class SkinRetouchEngine:
         return Image.fromarray(result_rgb)
 
     def even_tone(self, img, strength=0.5):
-        """Even out skin tone using GFPGAN's chrominance.
+        """Even out skin tone by smoothing chrominance variations within skin.
 
-        Blends A/B channels from GFPGAN (evenly-toned) with original,
-        while keeping L-channel from original (preserves texture).
+        Uses masked Gaussian blur on A/B channels to average out redness,
+        blotchiness, and uneven pigmentation. L-channel stays untouched
+        so all texture is preserved.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = full GFPGAN tone.
+            strength: 0.0 = no change, 1.0 = fully evened tone.
 
         Returns:
             Tone-evened PIL Image (RGB).
@@ -193,37 +194,42 @@ class SkinRetouchEngine:
 
         strength = min(strength, 1.0)
         img_array = np.array(img)
+        h, w = img_array.shape[:2]
+        short_edge = min(h, w)
 
-        # Get GFPGAN restored face
-        restored = self._restore_face(img_array)
-        if restored is None:
-            print("[skin_tone] No face detected by GFPGAN")
-            return img.copy()
-
-        # Get skin mask
+        # Get skin mask from face parsing
         skin_mask = self._get_skin_mask(img)
 
-        # LAB blending - take A/B from GFPGAN (even tone), keep L from original (texture)
+        # Convert to LAB
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
-        restored_lab = cv2.cvtColor(restored, cv2.COLOR_RGB2LAB).astype(np.float32)
-
-        # Keep original L (all texture preserved)
         L = img_lab[:, :, 0]
+        A = img_lab[:, :, 1]
+        B = img_lab[:, :, 2]
 
-        # Blend A/B toward GFPGAN (evens redness/patches)
-        A_orig = img_lab[:, :, 1]
-        B_orig = img_lab[:, :, 2]
-        A_restored = restored_lab[:, :, 1]
-        B_restored = restored_lab[:, :, 2]
+        # Large blur for tone evening (10% of short edge)
+        radius = max(15, int(short_edge * 0.10))
+        if radius % 2 == 0:
+            radius += 1
+        blur_size = radius * 2 + 1
+        sigma = radius * 0.4
 
-        A_result = A_orig * (1 - strength * skin_mask) + A_restored * (strength * skin_mask)
-        B_result = B_orig * (1 - strength * skin_mask) + B_restored * (strength * skin_mask)
+        # Masked blur: only average skin chrominance (excludes hair/background)
+        mask_blur = cv2.GaussianBlur(skin_mask, (blur_size, blur_size), sigma)
+        mask_blur = np.maximum(mask_blur, 1e-6)
 
+        A_smooth = cv2.GaussianBlur(A * skin_mask, (blur_size, blur_size), sigma) / mask_blur
+        B_smooth = cv2.GaussianBlur(B * skin_mask, (blur_size, blur_size), sigma) / mask_blur
+
+        # Blend chrominance toward local skin average
+        A_result = A * (1 - strength * skin_mask) + A_smooth * (strength * skin_mask)
+        B_result = B * (1 - strength * skin_mask) + B_smooth * (strength * skin_mask)
+
+        # L untouched — all texture preserved
         result_lab = np.stack([L, A_result, B_result], axis=-1)
         result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
         result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
 
-        print(f"[skin_tone] A diff: mean={np.abs(A_result - A_orig).mean():.2f}, "
-              f"B diff: mean={np.abs(B_result - B_orig).mean():.2f}")
+        print(f"[skin_tone] A diff: mean={np.abs(A_result - A).mean():.2f}, max={np.abs(A_result - A).max():.2f}")
+        print(f"[skin_tone] B diff: mean={np.abs(B_result - B).mean():.2f}, max={np.abs(B_result - B).max():.2f}")
 
         return Image.fromarray(result_rgb)
