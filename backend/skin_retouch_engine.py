@@ -1,10 +1,10 @@
-"""Skin retouching engine — AI face parsing + LAB chrominance smoothing."""
+"""Skin retouching engine — AI face parsing + spot blemish detection + inpainting."""
 import numpy as np
 from PIL import Image
 
 
 class SkinRetouchEngine:
-    """Remove blemishes and even skin tone using AI segmentation + LAB processing."""
+    """Remove blemishes by detecting individual spots and inpainting them."""
 
     def __init__(self):
         self._model = None
@@ -34,9 +34,8 @@ class SkinRetouchEngine:
     def _detect_skin_ai(self, img):
         """Detect skin using AI face parsing model.
 
-        Returns a float mask (H, W) where 1.0 = skin area.
+        Returns a binary mask (H, W) uint8 where 255 = skin area.
         Includes: skin, nose, neck (labels 1, 2, 17).
-        Excludes: eyes, eyebrows, lips, hair, glasses, ears.
         """
         import torch
         from torch import nn
@@ -48,38 +47,33 @@ class SkinRetouchEngine:
         with torch.no_grad():
             outputs = self._model(**inputs)
 
-        logits = outputs.logits  # (1, num_labels, H/4, W/4)
+        logits = outputs.logits
 
-        # Resize to original image dimensions
         upsampled = nn.functional.interpolate(
             logits, size=(img.height, img.width),
             mode='bilinear', align_corners=False,
         )
-        labels = upsampled.argmax(dim=1)[0].cpu().numpy()  # (H, W)
+        labels = upsampled.argmax(dim=1)[0].cpu().numpy()
 
-        # Skin-related labels: 1=skin, 2=nose, 17=neck
         skin_labels = {1, 2, 17}
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
         return mask
 
     def _detect_skin_color(self, img_array):
-        """Fallback: detect skin using color thresholding for body areas (arms/legs)."""
+        """Fallback: detect skin using color thresholding for body areas."""
         import cv2
 
         img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        # YCrCb detection — wide range for diverse skin tones
         ycrcb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb)
         mask_ycrcb = cv2.inRange(ycrcb, np.array([40, 125, 75]), np.array([255, 180, 135]))
 
-        # HSV detection
         hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
         mask_hsv = cv2.inRange(hsv, np.array([0, 10, 60]), np.array([35, 200, 255]))
 
         mask = cv2.bitwise_or(mask_ycrcb, mask_hsv)
 
-        # Cleanup
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -90,62 +84,117 @@ class SkinRetouchEngine:
         """Build combined skin mask: AI face parsing + color-based body detection."""
         import cv2
 
-        # AI face parsing (precise for face/neck)
         ai_mask = self._detect_skin_ai(img)
-
-        # Color-based detection (catches body skin: arms, legs, chest)
         color_mask = self._detect_skin_color(img_array)
-
-        # Union: AI mask covers face precisely, color mask adds body areas
         combined = cv2.bitwise_or(ai_mask, color_mask)
 
-        # Dilate to cover blemishes that were rejected by both detectors
+        # Small dilation to include blemishes at skin boundary
         short_edge = min(img_array.shape[0], img_array.shape[1])
-        dilate_size = max(7, int(short_edge * 0.025))
+        dilate_size = max(5, int(short_edge * 0.01))
         if dilate_size % 2 == 0:
             dilate_size += 1
         dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
         combined = cv2.dilate(combined, dilate_kernel, iterations=1)
 
-        # Smooth edges for natural blending
-        combined = cv2.GaussianBlur(combined, (7, 7), 0)
+        return combined
 
-        return combined.astype(np.float32) / 255.0
+    def _detect_blemishes(self, img_array, skin_mask, sensitivity=0.5):
+        """Detect individual blemish spots within the skin mask.
 
-    def _guided_filter(self, guide, src, radius, eps):
-        """Edge-preserving guided filter for optional texture smoothing."""
+        Finds pixels that deviate significantly from their local neighborhood
+        in luminance or chrominance -- these are the actual blemishes.
+
+        Args:
+            img_array: RGB image as numpy array.
+            skin_mask: Binary skin mask (uint8, 255=skin).
+            sensitivity: 0.0 = only obvious blemishes, 1.0 = very sensitive.
+
+        Returns:
+            Binary blemish mask (uint8, 255=blemish pixel).
+        """
         import cv2
 
-        guide = guide.astype(np.float32)
-        src = src.astype(np.float32)
+        h, w = img_array.shape[:2]
+        short_edge = min(h, w)
 
-        mean_g = cv2.boxFilter(guide, -1, (radius, radius))
-        mean_s = cv2.boxFilter(src, -1, (radius, radius))
-        mean_gs = cv2.boxFilter(guide * src, -1, (radius, radius))
-        mean_gg = cv2.boxFilter(guide * guide, -1, (radius, radius))
+        # Convert to LAB for perceptual analysis
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        img_lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
 
-        cov_gs = mean_gs - mean_g * mean_s
-        var_g = mean_gg - mean_g * mean_g
+        # Local neighborhood size -- must be larger than blemishes
+        # Typical blemish: 0.5-3% of face width; neighborhood: 5-10%
+        local_radius = max(15, int(short_edge * 0.06))
+        if local_radius % 2 == 0:
+            local_radius += 1
 
-        a = cov_gs / (var_g + eps)
-        b = mean_s - a * mean_g
+        # Compute local mean within skin-only regions (masked blur)
+        skin_f = (skin_mask / 255.0).astype(np.float32)
+        skin_blur = cv2.GaussianBlur(skin_f, (local_radius, local_radius), local_radius * 0.4)
+        skin_blur = np.maximum(skin_blur, 1e-6)
 
-        mean_a = cv2.boxFilter(a, -1, (radius, radius))
-        mean_b = cv2.boxFilter(b, -1, (radius, radius))
+        local_means = []
+        for ch in range(3):
+            ch_masked = img_lab[:, :, ch] * skin_f
+            ch_blur = cv2.GaussianBlur(ch_masked, (local_radius, local_radius), local_radius * 0.4)
+            local_means.append(ch_blur / skin_blur)
 
-        return mean_a * guide + mean_b
+        # Compute deviation from local mean for each pixel
+        L_dev = img_lab[:, :, 0] - local_means[0]  # negative = darker than surroundings
+        A_dev = img_lab[:, :, 1] - local_means[1]  # positive = more red
+        B_dev = img_lab[:, :, 2] - local_means[2]  # negative = more blue/purple
+
+        # Blemishes are: darker + redder/purpler than surroundings
+        dark_score = np.maximum(-L_dev, 0)   # how much darker than neighborhood
+        red_score = np.maximum(A_dev, 0)     # how much redder
+        blue_score = np.maximum(-B_dev, 0)   # how much more purple/blue
+
+        # Combined perceptual blemish score
+        blemish_score = dark_score + red_score * 0.7 + blue_score * 0.5
+
+        # Adaptive threshold based on sensitivity
+        skin_pixels = blemish_score[skin_mask > 0]
+        if len(skin_pixels) == 0:
+            return np.zeros((h, w), dtype=np.uint8)
+
+        # Threshold: spots that deviate significantly from mean score
+        score_mean = np.mean(skin_pixels)
+        score_std = np.std(skin_pixels)
+        # sensitivity=0 -> 3.0 std (few spots), sensitivity=1 -> 1.0 std (many spots)
+        threshold = score_mean + score_std * (3.0 - sensitivity * 2.0)
+        threshold = max(threshold, 3.0)  # minimum to avoid noise
+
+        # Create blemish mask
+        blemish_mask = ((blemish_score > threshold) & (skin_mask > 0)).astype(np.uint8) * 255
+
+        # Morphological cleanup: remove tiny noise dots
+        min_spot = max(2, int(short_edge * 0.003))
+        clean_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (min_spot, min_spot))
+        blemish_mask = cv2.morphologyEx(blemish_mask, cv2.MORPH_OPEN, clean_kernel)
+
+        # Dilate to cover the full extent of each blemish
+        dilate_size = max(3, int(short_edge * 0.005))
+        if dilate_size % 2 == 0:
+            dilate_size += 1
+        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_size, dilate_size))
+        blemish_mask = cv2.dilate(blemish_mask, dilate_kernel, iterations=1)
+
+        # Constrain to skin mask
+        blemish_mask = cv2.bitwise_and(blemish_mask, skin_mask)
+
+        print(f"[skin_retouch] threshold={threshold:.1f}, score_mean={score_mean:.1f}, score_std={score_std:.1f}")
+
+        return blemish_mask
 
     def retouch(self, img, strength=0.5, detail_size=0.05):
-        """Retouch skin: remove blemishes and even tone while preserving texture.
+        """Retouch skin: detect individual blemishes and inpaint them.
 
-        Uses AI face parsing for precise skin detection, then smooths chrominance
-        (color) in LAB space to remove colored blemishes without affecting texture.
+        Like Photoshop's Spot Healing Brush applied automatically to all blemishes.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = maximum blemish removal.
-            detail_size: Blur radius as fraction of image short edge (0.02–0.15).
-                         Larger = smooths bigger blemishes but may look unnatural.
+            strength: 0.0 = no change, 1.0 = full inpainting replacement.
+            detail_size: Controls blemish detection sensitivity (0.02-0.15).
+                         Higher = detects more/subtler blemishes.
 
         Returns:
             Retouched PIL Image (RGB).
@@ -157,72 +206,43 @@ class SkinRetouchEngine:
 
         strength = min(strength, 1.0)
         img_array = np.array(img)
-
-        # Adaptive radius based on image resolution
-        # Blemishes are typically 1-5% of face width; need blur much larger than
-        # blemish size to average them against surrounding healthy skin.
-        # Since L-channel preserves all texture, large A/B blur is safe.
-        short_edge = min(img_array.shape[0], img_array.shape[1])
-        radius = max(11, int(short_edge * detail_size))
-        if radius % 2 == 0:
-            radius += 1
+        h, w = img_array.shape[:2]
+        short_edge = min(h, w)
 
         # Step 1: AI skin detection
-        mask = self._build_skin_mask(img, img_array)
-        print(f"[skin_retouch] mask stats: min={mask.min():.3f}, max={mask.max():.3f}, "
-              f"mean={mask.mean():.3f}, nonzero={np.count_nonzero(mask > 0.1)}/{mask.size}")
-        print(f"[skin_retouch] strength={strength}, detail_size={detail_size}, "
-              f"radius={radius}, blur_size={radius*2+1}, sigma={radius*0.8:.1f}")
+        skin_mask = self._build_skin_mask(img, img_array)
 
-        # Step 2: Convert to LAB
-        img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
-        L = img_lab[:, :, 0]
-        A = img_lab[:, :, 1]
-        B = img_lab[:, :, 2]
+        # Step 2: Detect individual blemishes within skin
+        sensitivity = min(detail_size / 0.15, 1.0)  # normalize to 0-1
+        blemish_mask = self._detect_blemishes(img_array, skin_mask, sensitivity)
 
-        # Step 3: Smooth chrominance (removes colored blemishes)
-        # Use masked blur: only average chrominance from skin pixels.
-        # This prevents non-skin colors (hair, background) bleeding in.
-        # Formula: smooth = Blur(channel * mask) / Blur(mask)
-        blur_size = radius * 2 + 1
-        sigma = radius * 0.5
+        n_blemish = np.count_nonzero(blemish_mask)
+        n_skin = np.count_nonzero(skin_mask)
+        print(f"[skin_retouch] skin_pixels={n_skin}, blemish_pixels={n_blemish} "
+              f"({100*n_blemish/max(n_skin,1):.1f}% of skin), sensitivity={sensitivity:.2f}")
 
-        mask_blur = cv2.GaussianBlur(mask, (blur_size, blur_size), sigma)
-        mask_blur = np.maximum(mask_blur, 1e-6)  # avoid division by zero
+        if n_blemish == 0:
+            print("[skin_retouch] No blemishes detected")
+            return img.copy()
 
-        A_masked = A * mask
-        B_masked = B * mask
-        L_masked = L * mask
-        A_smooth = cv2.GaussianBlur(A_masked, (blur_size, blur_size), sigma) / mask_blur
-        B_smooth = cv2.GaussianBlur(B_masked, (blur_size, blur_size), sigma) / mask_blur
-        L_smooth = cv2.GaussianBlur(L_masked, (blur_size, blur_size), sigma) / mask_blur
+        # Step 3: Inpaint blemishes (like Photoshop healing brush)
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        # Second pass at high strength for more aggressive smoothing
-        if strength > 0.5:
-            A_smooth2 = A_smooth * mask
-            B_smooth2 = B_smooth * mask
-            L_smooth2 = L_smooth * mask
-            A_smooth = cv2.GaussianBlur(A_smooth2, (blur_size, blur_size), sigma) / mask_blur
-            B_smooth = cv2.GaussianBlur(B_smooth2, (blur_size, blur_size), sigma) / mask_blur
-            L_smooth = cv2.GaussianBlur(L_smooth2, (blur_size, blur_size), sigma) / mask_blur
+        # Inpainting radius -- how far to propagate texture from boundary
+        inpaint_radius = max(3, int(short_edge * 0.01))
 
-        # Blend chrominance fully into skin regions
-        A_result = A * (1 - strength * mask) + A_smooth * (strength * mask)
-        B_result = B * (1 - strength * mask) + B_smooth * (strength * mask)
+        inpainted = cv2.inpaint(img_bgr, blemish_mask, inpaint_radius, cv2.INPAINT_TELEA)
 
-        # Blend luminance at reduced strength to preserve face shape/shadows
-        # but still reduce dark marks. Use frequency separation:
-        # keep low-freq (face contours) + high-freq (pores), remove mid-freq (blemishes)
-        lum_strength = strength * 0.6  # less aggressive than chrominance
-        L_result = L * (1 - lum_strength * mask) + L_smooth * (lum_strength * mask)
+        # Step 4: Blend based on strength with soft edges
+        blend_mask = cv2.GaussianBlur(
+            blemish_mask.astype(np.float32) / 255.0,
+            (5, 5), 0
+        )
+        blend_mask = (blend_mask * strength)[:, :, np.newaxis]
 
-        print(f"[skin_retouch] A diff: mean={np.abs(A_result - A).mean():.2f}, max={np.abs(A_result - A).max():.2f}")
-        print(f"[skin_retouch] B diff: mean={np.abs(B_result - B).mean():.2f}, max={np.abs(B_result - B).max():.2f}")
-        print(f"[skin_retouch] L diff: mean={np.abs(L_result - L).mean():.2f}, max={np.abs(L_result - L).max():.2f}")
+        result_bgr = (img_bgr.astype(np.float32) * (1 - blend_mask) +
+                      inpainted.astype(np.float32) * blend_mask)
+        result_bgr = np.clip(result_bgr, 0, 255).astype(np.uint8)
 
-        # Step 4: Recombine and convert back
-        result_lab = np.stack([L_result, A_result, B_result], axis=-1)
-        result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
-        result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
-
+        result_rgb = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(result_rgb)
