@@ -1032,6 +1032,13 @@ async def get_settings_status():
     except Exception:
         models["face_parsing"] = {"name": "Face Parsing (Skin Retouch)", "size": "~170MB", "downloaded": False}
 
+    # GFPGAN (Skin Retouch - face restoration)
+    import os
+    gfpgan_path = os.path.join("gfpgan", "weights", "GFPGANv1.4.pth")
+    if not os.path.isfile(gfpgan_path):
+        gfpgan_path = os.path.join("experiments", "pretrained_models", "GFPGANv1.4.pth")
+    models["gfpgan"] = {"name": "GFPGAN v1.4 (Skin Retouch)", "size": "~330MB", "downloaded": os.path.isfile(gfpgan_path)}
+
     # Environment info
     env = {
         "python_version": sys.version.split()[0],
