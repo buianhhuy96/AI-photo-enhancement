@@ -123,20 +123,21 @@ class SkinRetouchEngine:
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
     def retouch(self, img, strength=0.5, detail_size=0.05):
-        """Remove blemishes via frequency separation + GFPGAN.
+        """Remove blemishes via two-radius frequency separation (no AI generation).
 
-        Frequency separation splits the image into:
-        - Low frequency: face shape, shadows, contours (preserved from original)
-        - High frequency: skin texture, pores, blemishes (taken from GFPGAN)
+        Uses two Gaussian blur radii to separate the image into three bands:
+        - Fine pores (very high freq): original - blur(original, r_small)
+        - Medium features/blemishes: between r_small and r_big — smoothed away
+        - Face structure (very low freq): blur(original, r_big)
 
-        This keeps eye shape and nose shadows intact while replacing blemished
-        texture with GFPGAN's clean generated texture.
+        Result = smooth_base + fine_pores = natural skin without scars/blemishes.
+        No AI generation avoids hallucination artifacts on profile faces.
 
         Args:
             img: Input PIL Image (RGB).
-            strength: 0.0 = no change, 1.0 = full texture replacement.
-            detail_size: Controls frequency split point as fraction of short edge.
-                         Larger = more preserved as "structure", smaller details replaced.
+            strength: 0.0 = no change, 1.0 = full blemish removal.
+            detail_size: Controls the large blur radius (fraction of short edge).
+                         Larger = smoother base = more aggressive blemish removal.
 
         Returns:
             Retouched PIL Image (RGB).
@@ -151,48 +152,47 @@ class SkinRetouchEngine:
         h, w = img_array.shape[:2]
         short_edge = min(h, w)
 
-        # Step 1: Get GFPGAN restored face
-        restored = self._restore_face(img_array)
-        if restored is None:
-            print("[skin_retouch] No face detected by GFPGAN")
-            return img.copy()
-
-        # Step 2: Get skin mask from face parsing
+        # Get skin mask from face parsing
         skin_mask = self._get_skin_mask(img)
 
-        # Step 3: Frequency separation on L-channel
+        # Convert to LAB — work on L channel (luminance/texture)
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
-        restored_lab = cv2.cvtColor(restored, cv2.COLOR_RGB2LAB).astype(np.float32)
-
         L_orig = img_lab[:, :, 0]
-        L_restored = restored_lab[:, :, 0]
 
-        # Separation radius from detail_size (fraction of short edge)
-        radius = max(3, int(short_edge * detail_size))
-        if radius % 2 == 0:
-            radius += 1
-        sigma = radius * 0.4
+        # r_small: extracts fine pores/texture only (very small ~2px)
+        r_small = max(1, int(short_edge * 0.002))
+        if r_small % 2 == 0:
+            r_small += 1
+        sigma_small = r_small * 0.4
+        ksize_small = r_small * 2 + 1
 
-        # Split into low (structure) and high (texture) frequencies
-        L_low_orig = cv2.GaussianBlur(L_orig, (radius * 2 + 1, radius * 2 + 1), sigma)
-        L_high_orig = L_orig - L_low_orig
+        # r_big: creates smooth base without blemishes (controlled by detail_size)
+        r_big = max(5, int(short_edge * detail_size))
+        if r_big % 2 == 0:
+            r_big += 1
+        sigma_big = r_big * 0.4
+        ksize_big = r_big * 2 + 1
 
-        L_low_restored = cv2.GaussianBlur(L_restored, (radius * 2 + 1, radius * 2 + 1), sigma)
-        L_high_restored = L_restored - L_low_restored
+        # Extract fine pore detail (high frequency: features smaller than r_small)
+        L_blur_small = cv2.GaussianBlur(L_orig, (ksize_small, ksize_small), sigma_small)
+        L_pores = L_orig - L_blur_small
 
-        # Combine: original structure + GFPGAN clean texture
-        L_combined = L_low_orig + L_high_restored
+        # Create smooth base (low frequency: features larger than r_big)
+        L_smooth_base = cv2.GaussianBlur(L_orig, (ksize_big, ksize_big), sigma_big)
+
+        # Combine: smooth base + fine pores = no blemishes, natural texture
+        L_retouched = L_smooth_base + L_pores
 
         # Blend onto original with strength and skin mask
-        L_result = L_orig * (1 - strength * skin_mask) + L_combined * (strength * skin_mask)
+        L_result = L_orig * (1 - strength * skin_mask) + L_retouched * (strength * skin_mask)
 
         # Keep original chrominance (preserves exact skin tone)
         result_lab = np.stack([L_result, img_lab[:, :, 1], img_lab[:, :, 2]], axis=-1)
         result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
         result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
 
-        print(f"[skin_retouch] freq-sep radius={radius}, L diff in skin: "
-              f"mean={np.abs(L_result - L_orig).mean():.2f}, "
+        print(f"[skin_retouch] r_small={r_small}, r_big={r_big}, "
+              f"L diff mean={np.abs(L_result - L_orig).mean():.2f}, "
               f"max={np.abs(L_result - L_orig).max():.2f}, strength={strength}")
 
         return Image.fromarray(result_rgb)
