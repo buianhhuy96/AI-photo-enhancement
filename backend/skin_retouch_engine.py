@@ -59,8 +59,10 @@ class SkinRetouchEngine:
         """Get skin-only mask from face parsing.
 
         Returns float mask (H, W) in [0, 1] where 1.0 = skin area.
-        Skin labels: 1=skin, 10=nose, 14=neck.
+        Skin labels: 1=skin, 2=nose, 14=neck.
         Protected: eyes, eyebrows, lips, mouth, hair, ears, glasses.
+        Expands skin region slightly to catch missed temples/forehead.
+        Subtracts dilated eye/brow zone to protect eyelid wrinkles.
         """
         import torch
         import cv2
@@ -87,8 +89,37 @@ class SkinRetouchEngine:
         skin_labels = {1, 2, 14}
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
+        # Expand skin mask slightly to catch missed temples/forehead on profiles
+        short_edge = min(img.width, img.height)
+        expand_k = max(3, int(short_edge * 0.01))
+        if expand_k % 2 == 0:
+            expand_k += 1
+        expand_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_k, expand_k))
+        mask_expanded = cv2.dilate(mask, expand_kernel, iterations=1)
+
+        # But don't expand into non-face areas (hair, background, clothes, etc.)
+        # Only allow expansion into background (0) that's adjacent to existing skin
+        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18}
+        hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
+        mask = np.where(hard_block > 0, mask, mask_expanded)
+
+        # Protect eye socket / eyelid area: dilate eye+brow regions and subtract
+        eye_brow_labels = {4, 5, 6, 7}
+        eye_brow_mask = np.isin(labels, list(eye_brow_labels)).astype(np.uint8) * 255
+        # Dilate to cover eyelid skin around eyes/brows
+        protect_k = max(5, int(short_edge * 0.025))
+        if protect_k % 2 == 0:
+            protect_k += 1
+        protect_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (protect_k, protect_k))
+        eye_protection = cv2.dilate(eye_brow_mask, protect_kernel, iterations=1)
+        # Subtract protection zone from skin mask
+        mask = np.where(eye_protection > 0, 0, mask).astype(np.uint8)
+
         # Smooth edges for natural blending
-        mask = cv2.GaussianBlur(mask, (7, 7), 0)
+        blur_k = max(7, int(short_edge * 0.008))
+        if blur_k % 2 == 0:
+            blur_k += 1
+        mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
 
         return mask.astype(np.float32) / 255.0
 
