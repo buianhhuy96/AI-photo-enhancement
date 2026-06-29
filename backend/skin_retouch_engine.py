@@ -17,6 +17,8 @@ class SkinRetouchEngine:
         self._parsing_processor = None
         self._gfpgan = None
         self._device = None
+        self._mask_cache_key = None
+        self._mask_cache = None
 
     def _get_device(self):
         if self._device is None:
@@ -56,17 +58,25 @@ class SkinRetouchEngine:
         )
 
     def _get_skin_mask(self, img):
-        """Get skin-only mask from face parsing.
+        """Get skin-only mask from face parsing (cached per image).
 
         Returns float mask (H, W) in [0, 1] where 1.0 = skin area.
+        Cached so slider adjustments don't re-run face parsing.
         Skin labels: 1=skin, 2=nose, 14=neck.
         Protected: eyes, eyebrows, lips, mouth, hair, ears, glasses.
         Expands skin region slightly to catch missed temples/forehead.
         Subtracts dilated eye/brow zone to protect eyelid wrinkles.
         """
+        import hashlib
         import torch
         import cv2
         from torch import nn
+
+        # Cache key: hash of raw image bytes + dimensions
+        img_bytes = img.tobytes()
+        cache_key = hashlib.md5(img_bytes[:4096] + img_bytes[-4096:]).hexdigest() + f"_{img.size}"
+        if self._mask_cache_key == cache_key and self._mask_cache is not None:
+            return self._mask_cache
 
         self._ensure_parsing_model()
         device = self._get_device()
@@ -121,7 +131,10 @@ class SkinRetouchEngine:
             blur_k += 1
         mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
 
-        return mask.astype(np.float32) / 255.0
+        result = mask.astype(np.float32) / 255.0
+        self._mask_cache_key = cache_key
+        self._mask_cache = result
+        return result
 
     def _restore_face(self, img_array):
         """Run GFPGAN on the image to get a restored face version.
