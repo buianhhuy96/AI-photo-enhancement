@@ -500,6 +500,8 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
         elif step.name == "skin_retouch":
             skin_strength = float(step.params.get("strength", 0.5))
             detail_size = float(step.params.get("detail_size", 0.01))
+            texture_amount = float(step.params.get("texture_amount", 0.5))
+            texture_scale = float(step.params.get("texture_scale", 0.5))
             skin_engine = _sessions.get("__skin_retouch_engine__")
             if mock_mode:
                 import time
@@ -507,7 +509,7 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
             else:
                 if skin_engine is None:
                     raise Exception("Skin retouch engine not initialized")
-                img = skin_engine.retouch(img, skin_strength, detail_size)
+                img = skin_engine.retouch(img, skin_strength, detail_size, texture_amount, texture_scale)
 
         elif step.name == "skin_tone":
             tone_strength = float(step.params.get("strength", 0.5))

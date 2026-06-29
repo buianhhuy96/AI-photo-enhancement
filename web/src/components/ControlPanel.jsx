@@ -141,6 +141,8 @@ export default memo(function ControlPanel({
   const [skinRetouchEnabled, setSkinRetouchEnabled] = useState(false);
   const [skinRetouchStrength, setSkinRetouchStrength] = useState(0.5);
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
+  const [skinTextureAmount, setSkinTextureAmount] = useState(0.5);
+  const [skinTextureScale, setSkinTextureScale] = useState(0.5);
   const [skinToneEnabled, setSkinToneEnabled] = useState(false);
   const [skinToneStrength, setSkinToneStrength] = useState(0.5);
   const [pipelineOrder, setPipelineOrder] = useState([]);
@@ -171,6 +173,8 @@ export default memo(function ControlPanel({
     const db = overrides.deblurLevel ?? deblurLevel;
     const skinStr = overrides.skinRetouchStrength ?? skinRetouchStrength;
     const skinDetail = overrides.skinDetailSize ?? skinDetailSize;
+    const skinTexAmt = overrides.skinTextureAmount ?? skinTextureAmount;
+    const skinTexScale = overrides.skinTextureScale ?? skinTextureScale;
     const toneStr = overrides.skinToneStrength ?? skinToneStrength;
 
     const steps = [];
@@ -182,7 +186,7 @@ export default memo(function ControlPanel({
       } else if (key === 'restore' && rstEnabled) {
         steps.push({ name: 'restore', params: { denoise: dn, deblur: db } });
       } else if (key === 'skin_retouch' && skinEnabled) {
-        steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail } });
+        steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail, texture_amount: skinTexAmt, texture_scale: skinTexScale } });
       } else if (key === 'skin_tone' && toneEnabled) {
         steps.push({ name: 'skin_tone', params: { strength: toneStr } });
       }
@@ -190,7 +194,7 @@ export default memo(function ControlPanel({
     onPipeline(steps);
   }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled, skinToneEnabled,
       resizeW, resizeH, denoiseStrength, quality, strength, use4bit,
-      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinToneStrength, onPipeline]);
+      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinTextureAmount, skinTextureScale, skinToneStrength, onPipeline]);
 
   // Reset dimensions when original size changes (image switch)
   useEffect(() => {
@@ -381,6 +385,26 @@ export default memo(function ControlPanel({
             if (skinRetouchEnabled) runPipeline({ skinDetailSize: v });
           }}
           displayValue={`${(skinDetailSize * 100).toFixed(1)}%`}
+        />
+        <SliderRow
+          label="Texture"
+          value={skinTextureAmount}
+          min={0} max={1} step={0.05}
+          onChange={(v) => {
+            setSkinTextureAmount(v);
+            if (skinRetouchEnabled) runPipeline({ skinTextureAmount: v });
+          }}
+          displayValue={`${Math.round(skinTextureAmount * 100)}%`}
+        />
+        <SliderRow
+          label="Texture Size"
+          value={skinTextureScale}
+          min={0} max={1} step={0.05}
+          onChange={(v) => {
+            setSkinTextureScale(v);
+            if (skinRetouchEnabled) runPipeline({ skinTextureScale: v });
+          }}
+          displayValue={`${Math.round(skinTextureScale * 100)}%`}
         />
       </ToolSection>
 

@@ -166,7 +166,7 @@ class SkinRetouchEngine:
         # Convert back to RGB
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
-    def retouch(self, img, strength=0.5, detail_size=0.05):
+    def retouch(self, img, strength=0.5, detail_size=0.05, texture_amount=0.5, texture_scale=0.5):
         """Remove blemishes via two-radius frequency separation (no AI generation).
 
         Uses two Gaussian blur radii to separate the image into three bands:
@@ -174,14 +174,15 @@ class SkinRetouchEngine:
         - Medium features/blemishes: between r_small and r_big — smoothed away
         - Face structure (very low freq): blur(original, r_big)
 
-        Result = smooth_base + fine_pores = natural skin without scars/blemishes.
-        No AI generation avoids hallucination artifacts on profile faces.
+        After smoothing, synthetic noise texture is added to avoid plastic look.
 
         Args:
             img: Input PIL Image (RGB).
             strength: 0.0 = no change, 1.0 = full blemish removal.
             detail_size: Controls the large blur radius (fraction of short edge).
                          Larger = smoother base = more aggressive blemish removal.
+            texture_amount: 0.0 = no texture (plastic), 1.0 = strong pore texture.
+            texture_scale: 0.0 = fine grain, 1.0 = coarse pores.
 
         Returns:
             Retouched PIL Image (RGB).
@@ -203,13 +204,6 @@ class SkinRetouchEngine:
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
         L_orig = img_lab[:, :, 0]
 
-        # r_small: extracts fine pores/texture only (very small ~2px)
-        r_small = max(1, int(short_edge * 0.002))
-        if r_small % 2 == 0:
-            r_small += 1
-        sigma_small = r_small * 0.4
-        ksize_small = r_small * 2 + 1
-
         # r_big: creates smooth base without blemishes (controlled by detail_size)
         r_big = max(5, int(short_edge * detail_size))
         if r_big % 2 == 0:
@@ -217,27 +211,41 @@ class SkinRetouchEngine:
         sigma_big = r_big * 0.4
         ksize_big = r_big * 2 + 1
 
-        # Extract fine pore detail (high frequency: features smaller than r_small)
-        L_blur_small = cv2.GaussianBlur(L_orig, (ksize_small, ksize_small), sigma_small)
-        L_pores = L_orig - L_blur_small
-
         # Create smooth base (low frequency: features larger than r_big)
         L_smooth_base = cv2.GaussianBlur(L_orig, (ksize_big, ksize_big), sigma_big)
 
-        # Combine: smooth base + fine pores = no blemishes, natural texture
-        L_retouched = L_smooth_base + L_pores
+        # Add synthetic skin texture (Gaussian noise + blur to mimic pore scale)
+        L_textured = L_smooth_base
+        if texture_amount > 0:
+            # Noise amplitude: 1.5-6 L units depending on texture_amount
+            amplitude = 1.5 + texture_amount * 4.5
+
+            # Pore blur radius: texture_scale controls grain size
+            # 0.0 = fine grain (~1px), 1.0 = coarse pores (~0.4% of short edge)
+            pore_radius = max(1, int(1 + texture_scale * short_edge * 0.004))
+            if pore_radius % 2 == 0:
+                pore_radius += 1
+            pore_sigma = pore_radius * 0.5
+
+            # Generate deterministic noise (seeded by image dimensions for consistency)
+            rng = np.random.RandomState(seed=h * 10000 + w)
+            noise = rng.normal(0, amplitude, (h, w)).astype(np.float32)
+
+            # Blur noise to pore scale
+            noise = cv2.GaussianBlur(noise, (pore_radius * 2 + 1, pore_radius * 2 + 1), pore_sigma)
+
+            L_textured = L_smooth_base + noise
 
         # Blend onto original with strength and skin mask
-        L_result = L_orig * (1 - strength * skin_mask) + L_retouched * (strength * skin_mask)
+        L_result = L_orig * (1 - strength * skin_mask) + L_textured * (strength * skin_mask)
 
         # Keep original chrominance (preserves exact skin tone)
         result_lab = np.stack([L_result, img_lab[:, :, 1], img_lab[:, :, 2]], axis=-1)
         result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
         result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
 
-        print(f"[skin_retouch] r_small={r_small}, r_big={r_big}, "
-              f"L diff mean={np.abs(L_result - L_orig).mean():.2f}, "
-              f"max={np.abs(L_result - L_orig).max():.2f}, strength={strength}")
+        print(f"[skin_retouch] r_big={r_big}, texture={texture_amount:.2f}, "
+              f"scale={texture_scale:.2f}, strength={strength}")
 
         return Image.fromarray(result_rgb)
 
