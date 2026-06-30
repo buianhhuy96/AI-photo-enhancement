@@ -136,6 +136,27 @@ class SkinRetouchEngine:
         self._mask_cache = result
         return result
 
+    def get_mask_overlay(self, img, opacity=0.5):
+        """Render a red overlay on detected skin areas for visualization.
+
+        Args:
+            img: Input PIL Image (RGB).
+            opacity: 0.0 = no overlay, 1.0 = solid red.
+
+        Returns:
+            PIL Image with red overlay on skin mask.
+        """
+        img_array = np.array(img)
+        skin_mask = self._get_skin_mask(img)
+
+        # Red overlay: [255, 0, 0]
+        overlay = img_array.astype(np.float32)
+        mask = skin_mask[:, :, np.newaxis] * opacity
+        red = np.array([255.0, 50.0, 50.0])
+        overlay = overlay * (1 - mask) + (overlay * (1 - 0.6) + red * 0.6) * mask
+        overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+        return Image.fromarray(overlay)
+
     def _restore_face(self, img_array):
         """Run GFPGAN on the image to get a restored face version.
 

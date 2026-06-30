@@ -522,6 +522,17 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
                     raise Exception("Skin retouch engine not initialized")
                 img = skin_engine.even_tone(img, tone_strength)
 
+        elif step.name == "skin_mask_overlay":
+            overlay_opacity = float(step.params.get("opacity", 0.5))
+            skin_engine = _sessions.get("__skin_retouch_engine__")
+            if mock_mode:
+                import time
+                time.sleep(0.2)
+            else:
+                if skin_engine is None:
+                    raise Exception("Skin retouch engine not initialized")
+                img = skin_engine.get_mask_overlay(img, overlay_opacity)
+
         # Cache intermediate
         cache[step_hash] = img.copy()
 

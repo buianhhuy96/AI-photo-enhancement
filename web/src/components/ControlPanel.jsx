@@ -143,6 +143,8 @@ export default memo(function ControlPanel({
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
   const [skinTextureAmount, setSkinTextureAmount] = useState(0);
   const [skinTextureScale, setSkinTextureScale] = useState(0);
+  const [skinMaskOverlay, setSkinMaskOverlay] = useState(false);
+  const [skinMaskOpacity, setSkinMaskOpacity] = useState(0.5);
   const [skinToneEnabled, setSkinToneEnabled] = useState(false);
   const [skinToneStrength, setSkinToneStrength] = useState(0.5);
   const [pipelineOrder, setPipelineOrder] = useState([]);
@@ -176,6 +178,8 @@ export default memo(function ControlPanel({
     const skinTexAmt = overrides.skinTextureAmount ?? skinTextureAmount;
     const skinTexScale = overrides.skinTextureScale ?? skinTextureScale;
     const toneStr = overrides.skinToneStrength ?? skinToneStrength;
+    const maskOverlay = overrides.skinMaskOverlay ?? skinMaskOverlay;
+    const maskOpacity = overrides.skinMaskOpacity ?? skinMaskOpacity;
 
     const steps = [];
     for (const key of order) {
@@ -191,10 +195,15 @@ export default memo(function ControlPanel({
         steps.push({ name: 'skin_tone', params: { strength: toneStr } });
       }
     }
+    // Mask overlay always last (topmost Z-axis)
+    if (maskOverlay) {
+      steps.push({ name: 'skin_mask_overlay', params: { opacity: maskOpacity } });
+    }
     onPipeline(steps);
   }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled, skinToneEnabled,
       resizeW, resizeH, denoiseStrength, quality, strength, use4bit,
-      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinTextureAmount, skinTextureScale, skinToneStrength, onPipeline]);
+      denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinTextureAmount, skinTextureScale,
+      skinMaskOverlay, skinMaskOpacity, skinToneStrength, onPipeline]);
 
   // Reset dimensions when original size changes (image switch)
   useEffect(() => {
@@ -406,6 +415,32 @@ export default memo(function ControlPanel({
           }}
           displayValue={`${Math.round(skinTextureScale * 100)}%`}
         />
+        <div style={{ borderTop: '1px solid #444', marginTop: 8, paddingTop: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={skinMaskOverlay}
+              onChange={() => {
+                const next = !skinMaskOverlay;
+                setSkinMaskOverlay(next);
+                runPipeline({ skinMaskOverlay: next });
+              }}
+            />
+            Show Mask Overlay
+          </label>
+          {skinMaskOverlay && (
+            <SliderRow
+              label="Opacity"
+              value={skinMaskOpacity}
+              min={0.1} max={1} step={0.05}
+              onChange={(v) => {
+                setSkinMaskOpacity(v);
+                runPipeline({ skinMaskOpacity: v });
+              }}
+              displayValue={`${Math.round(skinMaskOpacity * 100)}%`}
+            />
+          )}
+        </div>
       </ToolSection>
 
       {/* ═══ Skin Tone ═══ */}
