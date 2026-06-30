@@ -1,6 +1,8 @@
-"""Skin retouching engine — GFPGAN face restoration + face parsing mask + LAB blending."""
+"""Skin retouching engine — BiSeNet face parsing + frequency separation + LAB blending."""
+import os
 import numpy as np
 from PIL import Image
+import torchvision.transforms as transforms
 
 # Fix compatibility: basicsr imports removed torchvision.transforms.functional_tensor
 import torchvision.transforms.functional as _F
@@ -8,17 +10,27 @@ import sys
 if "torchvision.transforms.functional_tensor" not in sys.modules:
     sys.modules["torchvision.transforms.functional_tensor"] = _F
 
+# BiSeNet (yakhyo/face-parsing) label mapping — CelebAMask-HQ order:
+# 0=background, 1=skin, 2=l_brow, 3=r_brow, 4=l_eye, 5=r_eye,
+# 6=eye_g (glasses), 7=l_ear, 8=r_ear, 9=ear_r (earring), 10=nose,
+# 11=mouth, 12=u_lip, 13=l_lip, 14=neck, 15=neck_l (necklace),
+# 16=cloth, 17=hair, 18=hat
+_BISENET_WEIGHT_URL = "https://github.com/yakhyo/face-parsing/releases/download/weights/resnet18.pt"
+
 
 class SkinRetouchEngine:
-    """Remove blemishes using GFPGAN to regenerate skin, masked by face parsing."""
+    """Remove blemishes using frequency separation, masked by BiSeNet face parsing."""
 
     def __init__(self):
         self._parsing_model = None
-        self._parsing_processor = None
         self._gfpgan = None
         self._device = None
         self._mask_cache_key = None
         self._mask_cache = None
+        self._transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
 
     def _get_device(self):
         if self._device is None:
@@ -27,18 +39,29 @@ class SkinRetouchEngine:
         return self._device
 
     def _ensure_parsing_model(self):
-        """Load the face parsing model (SegFormer) for skin masking."""
+        """Load the BiSeNet face parsing model (ResNet18 backbone)."""
         if self._parsing_model is not None:
             return
         import torch
-        from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+        from backend.models.bisenet import BiSeNet
 
-        self._parsing_processor = SegformerImageProcessor.from_pretrained("jonathandinu/face-parsing")
-        self._parsing_model = SegformerForSemanticSegmentation.from_pretrained(
-            "jonathandinu/face-parsing",
-        )
-        self._parsing_model.to(self._get_device())
-        self._parsing_model.eval()
+        device = self._get_device()
+
+        # Download weights if needed
+        weights_dir = os.path.join(os.path.dirname(__file__), 'weights')
+        os.makedirs(weights_dir, exist_ok=True)
+        weight_path = os.path.join(weights_dir, 'bisenet_resnet18.pt')
+
+        if not os.path.exists(weight_path):
+            print(f"[skin_retouch] Downloading BiSeNet face parsing model (~43MB)...")
+            torch.hub.download_url_to_file(_BISENET_WEIGHT_URL, weight_path)
+            print(f"[skin_retouch] BiSeNet model downloaded to {weight_path}")
+
+        model = BiSeNet(num_classes=19, backbone_name='resnet18')
+        model.load_state_dict(torch.load(weight_path, map_location=device))
+        model.to(device)
+        model.eval()
+        self._parsing_model = model
 
     def _ensure_gfpgan(self):
         """Load GFPGAN face restoration model."""
@@ -58,19 +81,15 @@ class SkinRetouchEngine:
         )
 
     def _get_skin_mask(self, img):
-        """Get skin-only mask from face parsing (cached per image).
+        """Get skin-only mask from BiSeNet face parsing (cached per image).
 
         Returns float mask (H, W) in [0, 1] where 1.0 = skin area.
-        Cached so slider adjustments don't re-run face parsing.
-        Skin labels: 1=skin, 2=nose, 14=neck.
-        Protected: eyes, eyebrows, lips, mouth, hair, ears, glasses.
-        Expands skin region slightly to catch missed temples/forehead.
-        Subtracts dilated eye/brow zone to protect eyelid wrinkles.
+        BiSeNet labels: 1=skin, 10=nose, 14=neck.
+        Protected: eyes(4,5), brows(2,3), lips(12,13), mouth(11).
         """
         import hashlib
         import torch
         import cv2
-        from torch import nn
 
         # Cache key: hash of raw image bytes + dimensions
         img_bytes = img.tobytes()
@@ -81,23 +100,25 @@ class SkinRetouchEngine:
         self._ensure_parsing_model()
         device = self._get_device()
 
-        inputs = self._parsing_processor(images=img, return_tensors="pt").to(device)
+        # BiSeNet preprocessing: resize to 512x512, normalize with ImageNet stats
+        resized = img.resize((512, 512), resample=Image.BILINEAR)
+        input_tensor = self._transform(resized).unsqueeze(0).to(device)
+
         with torch.no_grad():
-            outputs = self._parsing_model(**inputs)
+            outputs = self._parsing_model(input_tensor)
+        # Use feat_out (index 0) for inference
+        logits = outputs[0].squeeze(0).cpu().numpy()  # (19, 512, 512)
+        labels_512 = logits.argmax(0)  # (512, 512)
 
-        logits = outputs.logits
-        upsampled = nn.functional.interpolate(
-            logits, size=(img.height, img.width),
-            mode='bilinear', align_corners=False,
-        )
-        labels = upsampled.argmax(dim=1)[0].cpu().numpy()
+        # Resize labels back to original image size
+        labels_pil = Image.fromarray(labels_512.astype(np.uint8))
+        labels = np.array(labels_pil.resize((img.width, img.height), resample=Image.NEAREST))
 
-        # jonathandinu/face-parsing labels (from model card):
-        # 0=background, 1=skin, 2=nose, 3=eye_g (glasses), 4=l_eye, 5=r_eye,
-        # 6=l_brow, 7=r_brow, 8=l_ear, 9=r_ear, 10=mouth, 11=u_lip,
-        # 12=l_lip, 13=hair, 14=hat, 15=ear_r (earring), 16=neck_l (necklace),
-        # 17=neck, 18=cloth
-        skin_labels = {1, 2, 17}  # skin + nose + neck
+        # BiSeNet (yakhyo/face-parsing) labels:
+        # 0=bg, 1=skin, 2=l_brow, 3=r_brow, 4=l_eye, 5=r_eye, 6=glasses,
+        # 7=l_ear, 8=r_ear, 9=earring, 10=nose, 11=mouth, 12=u_lip,
+        # 13=l_lip, 14=neck, 15=necklace, 16=cloth, 17=hair, 18=hat
+        skin_labels = {1, 10, 14}  # skin + nose + neck
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
         # Morphological closing: fill small holes/gaps inside skin regions
@@ -111,12 +132,14 @@ class SkinRetouchEngine:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
         # Don't let closing bleed into non-face areas
-        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
+        # Non-face: brows(2,3), eyes(4,5), glasses(6), ears(7,8), earring(9),
+        # mouth(11), lips(12,13), necklace(15), cloth(16), hair(17), hat(18)
+        non_face_hard = {2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
-        # Exclude nostrils: dark holes inside nose region
-        nose_region = (labels == 2)
+        # Exclude nostrils: dark holes inside nose region (label 10)
+        nose_region = (labels == 10)
         if nose_region.any():
             gray = np.array(img.convert('L'))
             nose_pixels = gray[nose_region]
@@ -130,7 +153,7 @@ class SkinRetouchEngine:
             mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
 
         # Protect eye socket / eyelid area: dilate eye+brow regions and subtract
-        eye_brow_labels = {4, 5, 6, 7}
+        eye_brow_labels = {2, 3, 4, 5}  # l_brow, r_brow, l_eye, r_eye
         eye_brow_mask = np.isin(labels, list(eye_brow_labels)).astype(np.uint8) * 255
         # Dilate to cover eyelid skin around eyes/brows
         protect_k = max(5, int(short_edge * 0.025))
@@ -142,7 +165,7 @@ class SkinRetouchEngine:
         mask = np.where(eye_protection > 0, 0, mask).astype(np.uint8)
 
         # Protect mouth/mustache area: dilate mouth+lip regions and subtract
-        mouth_labels = {10, 11, 12}  # mouth, upper lip, lower lip
+        mouth_labels = {11, 12, 13}  # mouth, upper lip, lower lip
         mouth_mask = np.isin(labels, list(mouth_labels)).astype(np.uint8) * 255
         mouth_k = max(5, int(short_edge * 0.02))
         if mouth_k % 2 == 0:
