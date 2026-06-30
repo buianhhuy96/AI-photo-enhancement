@@ -118,7 +118,7 @@ class SkinRetouchEngine:
         # 0=bg, 1=skin, 2=l_brow, 3=r_brow, 4=l_eye, 5=r_eye, 6=glasses,
         # 7=l_ear, 8=r_ear, 9=earring, 10=nose, 11=mouth, 12=u_lip,
         # 13=l_lip, 14=neck, 15=necklace, 16=cloth, 17=hair, 18=hat
-        skin_labels = {1, 10, 14}  # skin + nose + neck
+        skin_labels = {1, 7, 8, 10, 14}  # skin + ears + nose + neck
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
         # Morphological closing: fill small holes/gaps inside skin regions
@@ -132,9 +132,9 @@ class SkinRetouchEngine:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
 
         # Don't let closing bleed into non-face areas
-        # Non-face: brows(2,3), eyes(4,5), glasses(6), ears(7,8), earring(9),
+        # Non-face: brows(2,3), eyes(4,5), glasses(6), earring(9),
         # mouth(11), lips(12,13), necklace(15), cloth(16), hair(17), hat(18)
-        non_face_hard = {2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 15, 16, 17, 18}
+        non_face_hard = {2, 3, 4, 5, 6, 9, 11, 12, 13, 15, 16, 17, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
