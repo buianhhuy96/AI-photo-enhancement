@@ -394,17 +394,11 @@ class SkinRetouchEngine:
         # Blend onto original with strength and skin mask
         L_result = L_orig * (1 - strength * skin_mask) + L_textured * (strength * skin_mask)
 
-        # Apply luminance change back to RGB without affecting chrominance
-        # Compute L ratio and apply directly to RGB to avoid LAB→RGB rounding artifacts
+        # Reconstruct LAB with modified L, convert back via uint8 path (correct range handling)
         L_result = np.clip(L_result, 0, 255)
-        # Avoid division by zero
-        L_safe = np.maximum(L_orig, 1e-6)
-        lum_ratio = L_result / L_safe
-        # Clamp ratio to avoid extreme amplification in very dark areas
-        lum_ratio = np.clip(lum_ratio, 0.0, 3.0)
-
-        result_rgb = img_array.astype(np.float32) * lum_ratio[:, :, np.newaxis]
-        result_rgb = np.clip(result_rgb, 0, 255).astype(np.uint8)
+        result_lab = np.stack([L_result, img_lab[:, :, 1], img_lab[:, :, 2]], axis=-1)
+        result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
+        result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
 
         print(f"[skin_retouch] r_big={r_big}, texture={texture_amount:.2f}, "
               f"scale={texture_scale:.2f}, strength={strength}")

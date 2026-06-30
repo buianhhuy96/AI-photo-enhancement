@@ -352,6 +352,8 @@ async def get_image(session_id: str, index: int):
 
 # ── Pipeline cache: (session_id, index) → { steps_hash → PIL.Image }
 _pipeline_cache: dict[tuple, dict] = {}
+# Latest non-overlay result per image for export (always matches preview)
+_latest_export: dict[tuple, "Image"] = {}  # (session_id, index) → PIL.Image
 
 
 def _pipeline_hash(steps: list[PipelineStep], up_to: int) -> str:
@@ -542,6 +544,18 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
 
         # Cache intermediate
         cache[step_hash] = img.copy()
+
+    # Store latest non-overlay result for export (always matches what user sees)
+    # Walk backwards to find the last non-overlay step result
+    for i in range(len(steps) - 1, -1, -1):
+        if steps[i].name != "skin_mask_overlay":
+            export_hash = _pipeline_hash(steps, i + 1)
+            if export_hash in cache:
+                _latest_export[cache_key] = cache[export_hash].copy()
+            break
+    else:
+        # No non-overlay steps — shouldn't happen but fallback to original
+        pass
 
     # Generate preview
     preview = img.copy()
@@ -745,16 +759,11 @@ async def export_all(
             name = Path(img_path).stem
             progress_cb((idx) / total, f"[{idx+1}/{total}] {name}...")
 
-            # Check if we have a cached pipeline result for this image
+            # Check if we have the latest pipeline result for this image
             cache_key = (session_id, idx)
             cached_img = None
-            if cache_key in _pipeline_cache and _pipeline_cache[cache_key]:
-                # Get the most complete cached result, excluding mask overlay
-                candidates = {k: v for k, v in _pipeline_cache[cache_key].items()
-                              if "skin_mask_overlay" not in k}
-                if candidates:
-                    best = max(candidates.items(), key=lambda x: len(x[0]))
-                    cached_img = best[1]
+            if cache_key in _latest_export:
+                cached_img = _latest_export[cache_key]
 
             if cached_img is not None:
                 # Use cached result — no need to re-run AI
@@ -775,13 +784,9 @@ async def export_all(
                     steps = [PipelineStep(name=s["name"], params=s.get("params", {})) for s in img_steps_raw]
                     try:
                         _execute_pipeline(session_id, idx, img_path, steps)
-                        # Retrieve the result from cache
-                        if cache_key in _pipeline_cache and _pipeline_cache[cache_key]:
-                            candidates = {k: v for k, v in _pipeline_cache[cache_key].items()
-                                          if "skin_mask_overlay" not in k}
-                            if candidates:
-                                best = max(candidates.items(), key=lambda x: len(x[0]))
-                                cached_img = best[1]
+                        # _execute_pipeline updates _latest_export
+                        if cache_key in _latest_export:
+                            cached_img = _latest_export[cache_key]
                         if cached_img is not None:
                             out_path = export_dir / f"{name}_clean.{output_format}"
                             if output_format == "jpg":
