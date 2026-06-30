@@ -52,13 +52,18 @@ class SkinRetouchEngine:
         """Load MediaPipe Face Mesh for face contour detection."""
         if self._face_mesh is not None:
             return
-        import mediapipe as mp
-        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True,
-            max_num_faces=4,
-            refine_landmarks=False,
-            min_detection_confidence=0.3,
-        )
+        try:
+            import mediapipe as mp
+            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=4,
+                refine_landmarks=False,
+                min_detection_confidence=0.3,
+            )
+        except ImportError:
+            print("[skin_retouch] WARNING: mediapipe not installed — face contour fallback disabled. "
+                  "Install with: pip install mediapipe")
+            self._face_mesh = "unavailable"
 
     def _get_face_contour_mask(self, img):
         """Get face skin contour mask from MediaPipe Face Mesh.
@@ -68,6 +73,8 @@ class SkinRetouchEngine:
         """
         import cv2
         self._ensure_face_mesh()
+        if self._face_mesh == "unavailable":
+            return None
         img_array = np.array(img)
         h, w = img_array.shape[:2]
         results = self._face_mesh.process(img_array)
