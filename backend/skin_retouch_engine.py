@@ -12,10 +12,18 @@ if "torchvision.transforms.functional_tensor" not in sys.modules:
 class SkinRetouchEngine:
     """Remove blemishes using GFPGAN to regenerate skin, masked by face parsing."""
 
+    # MediaPipe Face Mesh face oval landmark indices (contour around the face)
+    _FACE_OVAL_IDX = [
+        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+        397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+        172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
+    ]
+
     def __init__(self):
         self._parsing_model = None
         self._parsing_processor = None
         self._gfpgan = None
+        self._face_mesh = None
         self._device = None
         self._mask_cache_key = None
         self._mask_cache = None
@@ -39,6 +47,42 @@ class SkinRetouchEngine:
         )
         self._parsing_model.to(self._get_device())
         self._parsing_model.eval()
+
+    def _ensure_face_mesh(self):
+        """Load MediaPipe Face Mesh for face contour detection."""
+        if self._face_mesh is not None:
+            return
+        import mediapipe as mp
+        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=4,
+            refine_landmarks=False,
+            min_detection_confidence=0.3,
+        )
+
+    def _get_face_contour_mask(self, img):
+        """Get face skin contour mask from MediaPipe Face Mesh.
+
+        Returns a binary uint8 mask (H, W) where 255 = inside face oval.
+        Returns None if no face detected.
+        """
+        import cv2
+        self._ensure_face_mesh()
+        img_array = np.array(img)
+        h, w = img_array.shape[:2]
+        results = self._face_mesh.process(img_array)
+        if not results.multi_face_landmarks:
+            return None
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for face_landmarks in results.multi_face_landmarks:
+            pts = []
+            for idx in self._FACE_OVAL_IDX:
+                lm = face_landmarks.landmark[idx]
+                pts.append((int(lm.x * w), int(lm.y * h)))
+            pts = np.array(pts, dtype=np.int32)
+            cv2.fillConvexPoly(mask, pts, 255)
+        return mask
 
     def _ensure_gfpgan(self):
         """Load GFPGAN face restoration model."""
@@ -116,6 +160,17 @@ class SkinRetouchEngine:
             nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
             mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
 
+        # Non-face labels that should never be overwritten
+        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
+        hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
+
+        # MediaPipe Face Mesh fallback: fill gaps in parsing mask on profiles
+        face_contour = self._get_face_contour_mask(img)
+        if face_contour is not None:
+            # Face contour fills gaps where parsing missed skin (background=0)
+            fillable = (face_contour > 0) & (hard_block == 0)
+            mask = np.where(fillable, np.maximum(mask, face_contour), mask)
+
         # Expand skin mask slightly to catch missed temples/forehead on profiles
         short_edge = min(img.width, img.height)
         expand_k = max(3, int(short_edge * 0.01))
@@ -125,9 +180,6 @@ class SkinRetouchEngine:
         mask_expanded = cv2.dilate(mask, expand_kernel, iterations=1)
 
         # But don't expand into non-face areas (hair, background, clothes, etc.)
-        # Only allow expansion into background (0) that's adjacent to existing skin
-        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
-        hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, mask, mask_expanded)
 
         # Protect eye socket / eyelid area: dilate eye+brow regions and subtract
