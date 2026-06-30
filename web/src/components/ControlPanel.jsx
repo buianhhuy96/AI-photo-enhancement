@@ -143,7 +143,7 @@ export default memo(function ControlPanel({
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
   const [skinTextureAmount, setSkinTextureAmount] = useState(0);
   const [skinTextureScale, setSkinTextureScale] = useState(0);
-  const [skinFeather, setSkinFeather] = useState(0.5);
+  const [skinFeather, setSkinFeather] = useState(20);
   const [skinMaskOverlay, setSkinMaskOverlay] = useState(false);
   const [skinMaskOpacity, setSkinMaskOpacity] = useState(0.5);
   const [skinToneEnabled, setSkinToneEnabled] = useState(false);
@@ -379,12 +379,12 @@ export default memo(function ControlPanel({
         <SliderRow
           label="Feather"
           value={skinFeather}
-          min={0} max={1} step={0.05}
+          min={0} max={100} step={1}
           onChange={(v) => {
             setSkinFeather(v);
             if (skinRetouchEnabled || skinToneEnabled || skinMaskOverlay) runPipeline({ skinFeather: v });
           }}
-          displayValue={`${Math.round(skinFeather * 100)}%`}
+          displayValue={`${Math.round(skinFeather)}px`}
         />
         <div style={{ borderTop: '1px solid #555', margin: '6px 0' }} />
         <SliderRow

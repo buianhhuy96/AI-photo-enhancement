@@ -94,7 +94,7 @@ class SkinRetouchEngine:
 
         # Cache key: hash of raw image bytes + dimensions + feather
         img_bytes = img.tobytes()
-        cache_key = hashlib.md5(img_bytes[:4096] + img_bytes[-4096:]).hexdigest() + f"_{img.size}_{feather:.2f}"
+        cache_key = hashlib.md5(img_bytes[:4096] + img_bytes[-4096:]).hexdigest() + f"_{img.size}_{int(feather)}"
         if self._mask_cache_key == cache_key and self._mask_cache is not None:
             return self._mask_cache
 
@@ -252,13 +252,11 @@ class SkinRetouchEngine:
                         beard_u8 = cv2.dilate(beard_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (bd_k, bd_k)))
                         mask = np.where(beard_u8 > 0, 0, mask).astype(np.uint8)
 
-        # Feather edges: controlled by feather param (0=hard, 1=very soft)
-        # Range: 0.8% to 5% of short edge
-        feather_frac = 0.008 + feather * 0.042
-        blur_k = max(7, int(short_edge * feather_frac))
-        if blur_k % 2 == 0:
-            blur_k += 1
-        mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
+        # Feather edges: Gaussian blur with radius in pixels
+        # feather = blur radius in pixels (0 = hard edge, higher = softer)
+        blur_k = max(1, int(feather)) * 2 + 1  # convert radius to odd kernel size
+        if blur_k > 1:
+            mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
 
         result = mask.astype(np.float32) / 255.0
         self._mask_cache_key = cache_key
