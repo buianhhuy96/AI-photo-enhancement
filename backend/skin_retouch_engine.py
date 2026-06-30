@@ -217,22 +217,27 @@ class SkinRetouchEngine:
         # Add synthetic skin texture (Gaussian noise + blur to mimic pore scale)
         L_textured = L_smooth_base
         if texture_amount > 0:
-            # Noise amplitude: 1.5-6 L units depending on texture_amount
-            amplitude = 1.5 + texture_amount * 4.5
+            # Target amplitude after blur: 3-15 L units (visible range on 0-255 scale)
+            target_amplitude = 3.0 + texture_amount * 12.0
 
             # Pore blur radius: texture_scale controls grain size
-            # 0.0 = fine grain (~1px), 1.0 = coarse pores (~0.4% of short edge)
-            pore_radius = max(1, int(1 + texture_scale * short_edge * 0.004))
+            # 0.0 = fine grain (~1px), 1.0 = coarse pores (~1% of short edge)
+            pore_radius = max(1, int(1 + texture_scale * short_edge * 0.01))
             if pore_radius % 2 == 0:
                 pore_radius += 1
-            pore_sigma = pore_radius * 0.5
+            pore_sigma = pore_radius * 0.6
 
             # Generate deterministic noise (seeded by image dimensions for consistency)
             rng = np.random.RandomState(seed=h * 10000 + w)
-            noise = rng.normal(0, amplitude, (h, w)).astype(np.float32)
+            noise = rng.normal(0, 1.0, (h, w)).astype(np.float32)
 
-            # Blur noise to pore scale
+            # Blur noise to pore scale (this reduces amplitude)
             noise = cv2.GaussianBlur(noise, (pore_radius * 2 + 1, pore_radius * 2 + 1), pore_sigma)
+
+            # Rescale to target amplitude (compensate for blur reduction)
+            noise_std = noise.std()
+            if noise_std > 0:
+                noise = noise * (target_amplitude / noise_std)
 
             L_textured = L_smooth_base + noise
 
