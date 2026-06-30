@@ -80,20 +80,21 @@ class SkinRetouchEngine:
             bg_upsampler=None,
         )
 
-    def _get_skin_mask(self, img):
+    def _get_skin_mask(self, img, feather=0.5):
         """Get skin-only mask from BiSeNet face parsing (cached per image).
 
         Returns float mask (H, W) in [0, 1] where 1.0 = skin area.
-        BiSeNet labels: 1=skin, 10=nose, 14=neck.
+        BiSeNet labels: 1=skin, 7/8=ears, 10=nose, 14=neck.
         Protected: eyes(4,5), brows(2,3), lips(12,13), mouth(11).
+        feather: 0.0 = hard edge, 1.0 = very soft/wide feather.
         """
         import hashlib
         import torch
         import cv2
 
-        # Cache key: hash of raw image bytes + dimensions
+        # Cache key: hash of raw image bytes + dimensions + feather
         img_bytes = img.tobytes()
-        cache_key = hashlib.md5(img_bytes[:4096] + img_bytes[-4096:]).hexdigest() + f"_{img.size}"
+        cache_key = hashlib.md5(img_bytes[:4096] + img_bytes[-4096:]).hexdigest() + f"_{img.size}_{feather:.2f}"
         if self._mask_cache_key == cache_key and self._mask_cache is not None:
             return self._mask_cache
 
@@ -138,15 +139,17 @@ class SkinRetouchEngine:
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
-        # Exclude nostrils: dark holes inside nose region (label 10)
+        # Exclude nostrils: only the actual dark nostril holes
         nose_region = (labels == 10)
         if nose_region.any():
             gray = np.array(img.convert('L'))
             nose_pixels = gray[nose_region]
-            nostril_thresh = np.percentile(nose_pixels, 25)  # darkest 25%
+            # Only exclude very dark pixels (actual holes, not nose sides)
+            nostril_thresh = np.percentile(nose_pixels, 10)  # darkest 10% only
             nostrils = nose_region & (gray <= nostril_thresh)
             nostril_u8 = nostrils.astype(np.uint8) * 255
-            nk = max(5, int(short_edge * 0.01))
+            # Minimal dilation — just the hole itself
+            nk = max(3, int(short_edge * 0.005))
             if nk % 2 == 0:
                 nk += 1
             nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
@@ -174,8 +177,10 @@ class SkinRetouchEngine:
         mouth_protection = cv2.dilate(mouth_mask, mouth_kernel, iterations=1)
         mask = np.where(mouth_protection > 0, 0, mask).astype(np.uint8)
 
-        # Smooth edges for natural blending
-        blur_k = max(7, int(short_edge * 0.008))
+        # Feather edges: controlled by feather param (0=hard, 1=very soft)
+        # Range: 0.8% to 5% of short edge
+        feather_frac = 0.008 + feather * 0.042
+        blur_k = max(7, int(short_edge * feather_frac))
         if blur_k % 2 == 0:
             blur_k += 1
         mask = cv2.GaussianBlur(mask, (blur_k, blur_k), 0)
@@ -185,7 +190,7 @@ class SkinRetouchEngine:
         self._mask_cache = result
         return result
 
-    def get_mask_overlay(self, img, opacity=0.5):
+    def get_mask_overlay(self, img, opacity=0.5, feather=0.5):
         """Render a red overlay on detected skin areas for visualization.
 
         Args:
@@ -196,7 +201,7 @@ class SkinRetouchEngine:
             PIL Image with red overlay on skin mask.
         """
         img_array = np.array(img)
-        skin_mask = self._get_skin_mask(img)
+        skin_mask = self._get_skin_mask(img, feather=feather)
 
         # Red overlay: [255, 0, 0]
         overlay = img_array.astype(np.float32)
@@ -236,7 +241,7 @@ class SkinRetouchEngine:
         # Convert back to RGB
         return cv2.cvtColor(restored_img, cv2.COLOR_BGR2RGB)
 
-    def retouch(self, img, strength=0.5, detail_size=0.05, texture_amount=0.5, texture_scale=0.5):
+    def retouch(self, img, strength=0.5, detail_size=0.05, texture_amount=0.5, texture_scale=0.5, feather=0.5):
         """Remove blemishes via two-radius frequency separation (no AI generation).
 
         Uses two Gaussian blur radii to separate the image into three bands:
@@ -268,7 +273,7 @@ class SkinRetouchEngine:
         short_edge = min(h, w)
 
         # Get skin mask from face parsing
-        skin_mask = self._get_skin_mask(img)
+        skin_mask = self._get_skin_mask(img, feather=feather)
 
         # Convert to LAB — work on L channel (luminance/texture)
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
@@ -324,7 +329,7 @@ class SkinRetouchEngine:
 
         return Image.fromarray(result_rgb)
 
-    def even_tone(self, img, strength=0.5):
+    def even_tone(self, img, strength=0.5, feather=0.5):
         """Even out skin tone by smoothing chrominance variations within skin.
 
         Uses masked Gaussian blur on A/B channels to average out redness,
@@ -349,7 +354,7 @@ class SkinRetouchEngine:
         short_edge = min(h, w)
 
         # Get skin mask from face parsing
-        skin_mask = self._get_skin_mask(img)
+        skin_mask = self._get_skin_mask(img, feather=feather)
 
         # Convert to LAB
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)

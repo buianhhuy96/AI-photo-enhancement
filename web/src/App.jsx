@@ -35,6 +35,7 @@ export default function App() {
 
   const EMPTY_SET = useRef(new Set()).current;
   const imageCache = useRef(new Map()); // index → full-res URL
+  const configByImage = useRef({}); // index → pipeline steps config (excluding mask overlay)
 
   const log = useCallback((msg) => {
     setStatusMsg(msg);
@@ -244,6 +245,12 @@ export default function App() {
   const handlePipeline = useCallback((steps) => {
     if (!sessionId) return;
 
+    // Store config for this image (excluding mask overlay)
+    const exportSteps = steps ? steps.filter(s => s.name !== 'skin_mask_overlay') : [];
+    if (exportSteps.length > 0) {
+      configByImage.current[selectedIndex] = exportSteps;
+    }
+
     // If no steps are active, revert to original
     if (!steps || steps.length === 0) {
       const cached = imageCache.current.get(selectedIndex);
@@ -280,6 +287,7 @@ export default function App() {
     try {
       const data = await exportAll(sessionId, {
         quality, strength, use4bit, outputFormat, jpgQuality,
+        configByImage: configByImage.current,
       }, (progress, message) => {
         setExportProgress(progress);
         log(message);

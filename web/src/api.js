@@ -211,6 +211,8 @@ export async function exportAll(sessionId, params = {}, onProgress) {
   });
   const res = await fetch(`${API}/api/export/${sessionId}?${qs}`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config_by_image: params.configByImage || {} }),
   });
   if (!res.ok) throw new Error(`Export failed: ${res.status}`);
 

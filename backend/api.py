@@ -98,6 +98,10 @@ class PipelineRequest(BaseModel):
     steps: list[PipelineStep]
 
 
+class ExportRequest(BaseModel):
+    config_by_image: dict[str, list[dict]] = {}  # index (as string) → list of step dicts
+
+
 # ── Helpers ──
 
 def _img_to_base64(img: Image.Image, fmt: str = "JPEG", quality: int = 85) -> str:
@@ -502,6 +506,7 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
             detail_size = float(step.params.get("detail_size", 0.01))
             texture_amount = float(step.params.get("texture_amount", 0.5))
             texture_scale = float(step.params.get("texture_scale", 0.5))
+            feather = float(step.params.get("feather", 0.5))
             skin_engine = _sessions.get("__skin_retouch_engine__")
             if mock_mode:
                 import time
@@ -509,10 +514,11 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
             else:
                 if skin_engine is None:
                     raise Exception("Skin retouch engine not initialized")
-                img = skin_engine.retouch(img, skin_strength, detail_size, texture_amount, texture_scale)
+                img = skin_engine.retouch(img, skin_strength, detail_size, texture_amount, texture_scale, feather)
 
         elif step.name == "skin_tone":
             tone_strength = float(step.params.get("strength", 0.5))
+            feather = float(step.params.get("feather", 0.5))
             skin_engine = _sessions.get("__skin_retouch_engine__")
             if mock_mode:
                 import time
@@ -520,10 +526,11 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
             else:
                 if skin_engine is None:
                     raise Exception("Skin retouch engine not initialized")
-                img = skin_engine.even_tone(img, tone_strength)
+                img = skin_engine.even_tone(img, tone_strength, feather)
 
         elif step.name == "skin_mask_overlay":
             overlay_opacity = float(step.params.get("opacity", 0.5))
+            feather = float(step.params.get("feather", 0.5))
             skin_engine = _sessions.get("__skin_retouch_engine__")
             if mock_mode:
                 import time
@@ -531,7 +538,7 @@ def _execute_pipeline(session_id: str, index: int, file_path: str, steps):
             else:
                 if skin_engine is None:
                     raise Exception("Skin retouch engine not initialized")
-                img = skin_engine.get_mask_overlay(img, overlay_opacity)
+                img = skin_engine.get_mask_overlay(img, overlay_opacity, feather)
 
         # Cache intermediate
         cache[step_hash] = img.copy()
@@ -696,6 +703,7 @@ async def blend(session_id: str, index: int, strength: float = 1.0):
 @app.post("/api/export/{session_id}")
 async def export_all(
     session_id: str,
+    req: ExportRequest = ExportRequest(),
     quality: int = 0,
     strength: float = 0.5,
     use_4bit: bool = True,
@@ -709,6 +717,7 @@ async def export_all(
 
     engine = _sessions.get("__engine__")
     mock_mode = _sessions.get("__mock_mode__", True)
+    config_by_image = req.config_by_image
     q = queue.Queue()
 
     def progress_cb(fraction, description):
@@ -726,6 +735,12 @@ async def export_all(
         total = len(file_list)
         lines = []
 
+        # Find a fallback config: use the last-modified image's config (highest index with a config)
+        fallback_steps = None
+        if config_by_image:
+            max_key = max(config_by_image.keys(), key=lambda k: int(k))
+            fallback_steps = config_by_image[max_key]
+
         for idx, img_path in enumerate(file_list):
             name = Path(img_path).stem
             progress_cb((idx) / total, f"[{idx+1}/{total}] {name}...")
@@ -734,9 +749,12 @@ async def export_all(
             cache_key = (session_id, idx)
             cached_img = None
             if cache_key in _pipeline_cache and _pipeline_cache[cache_key]:
-                # Get the most complete cached result (longest step hash)
-                best = max(_pipeline_cache[cache_key].items(), key=lambda x: len(x[0]))
-                cached_img = best[1]
+                # Get the most complete cached result, excluding mask overlay
+                candidates = {k: v for k, v in _pipeline_cache[cache_key].items()
+                              if "skin_mask_overlay" not in k}
+                if candidates:
+                    best = max(candidates.items(), key=lambda x: len(x[0]))
+                    cached_img = best[1]
 
             if cached_img is not None:
                 # Use cached result — no need to re-run AI
@@ -748,23 +766,67 @@ async def export_all(
                 else:
                     cached_img.save(str(out_path), "PNG")
                 lines.append(f"[{idx+1}/{total}] Done: {name} (cached)")
-            elif mock_mode:
-                import time
-                time.sleep(0.3)
-                out_path = export_dir / f"{name}_clean.{output_format}"
-                Image.open(img_path).convert("RGB").save(str(out_path))
-                lines.append(f"[{idx+1}/{total}] {name} (mock)")
             else:
-                # No cache — export the original (don't re-run GPU processing)
-                out_path = export_dir / f"{name}_clean.{output_format}"
-                img = Image.open(img_path).convert("RGB")
-                if output_format == "jpg":
-                    img.save(str(out_path), "JPEG", quality=jpg_quality)
-                elif output_format == "webp":
-                    img.save(str(out_path), "WEBP", quality=jpg_quality)
+                # No cache — check if we have a config to apply
+                img_steps_raw = config_by_image.get(str(idx), fallback_steps)
+
+                if img_steps_raw and not mock_mode:
+                    # Run pipeline with the config
+                    steps = [PipelineStep(name=s["name"], params=s.get("params", {})) for s in img_steps_raw]
+                    try:
+                        _execute_pipeline(session_id, idx, img_path, steps)
+                        # Retrieve the result from cache
+                        if cache_key in _pipeline_cache and _pipeline_cache[cache_key]:
+                            candidates = {k: v for k, v in _pipeline_cache[cache_key].items()
+                                          if "skin_mask_overlay" not in k}
+                            if candidates:
+                                best = max(candidates.items(), key=lambda x: len(x[0]))
+                                cached_img = best[1]
+                        if cached_img is not None:
+                            out_path = export_dir / f"{name}_clean.{output_format}"
+                            if output_format == "jpg":
+                                cached_img.save(str(out_path), "JPEG", quality=jpg_quality)
+                            elif output_format == "webp":
+                                cached_img.save(str(out_path), "WEBP", quality=jpg_quality)
+                            else:
+                                cached_img.save(str(out_path), "PNG")
+                            lines.append(f"[{idx+1}/{total}] Done: {name} (processed)")
+                        else:
+                            # Fallback to original if pipeline produced nothing
+                            out_path = export_dir / f"{name}_clean.{output_format}"
+                            img = Image.open(img_path).convert("RGB")
+                            if output_format == "jpg":
+                                img.save(str(out_path), "JPEG", quality=jpg_quality)
+                            elif output_format == "webp":
+                                img.save(str(out_path), "WEBP", quality=jpg_quality)
+                            else:
+                                img.save(str(out_path), "PNG")
+                            lines.append(f"[{idx+1}/{total}] {name} (original — pipeline failed)")
+                    except Exception as e:
+                        # Pipeline error — export original
+                        out_path = export_dir / f"{name}_clean.{output_format}"
+                        img = Image.open(img_path).convert("RGB")
+                        if output_format == "jpg":
+                            img.save(str(out_path), "JPEG", quality=jpg_quality)
+                        elif output_format == "webp":
+                            img.save(str(out_path), "WEBP", quality=jpg_quality)
+                        else:
+                            img.save(str(out_path), "PNG")
+                        lines.append(f"[{idx+1}/{total}] {name} (original — error: {e})")
                 else:
-                    img.save(str(out_path), "PNG")
-                lines.append(f"[{idx+1}/{total}] {name} (original — not yet processed)")
+                    # No config or mock mode — export original
+                    out_path = export_dir / f"{name}_clean.{output_format}"
+                    img = Image.open(img_path).convert("RGB")
+                    if output_format == "jpg":
+                        img.save(str(out_path), "JPEG", quality=jpg_quality)
+                    elif output_format == "webp":
+                        img.save(str(out_path), "WEBP", quality=jpg_quality)
+                    else:
+                        img.save(str(out_path), "PNG")
+                    if mock_mode:
+                        lines.append(f"[{idx+1}/{total}] {name} (mock)")
+                    else:
+                        lines.append(f"[{idx+1}/{total}] {name} (original — no config)")
 
             progress_cb((idx + 1) / total, f"[{idx+1}/{total}] {name} done")
 

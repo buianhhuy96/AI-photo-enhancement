@@ -143,6 +143,7 @@ export default memo(function ControlPanel({
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
   const [skinTextureAmount, setSkinTextureAmount] = useState(0);
   const [skinTextureScale, setSkinTextureScale] = useState(0);
+  const [skinFeather, setSkinFeather] = useState(0.5);
   const [skinMaskOverlay, setSkinMaskOverlay] = useState(false);
   const [skinMaskOpacity, setSkinMaskOpacity] = useState(0.5);
   const [skinToneEnabled, setSkinToneEnabled] = useState(false);
@@ -190,20 +191,20 @@ export default memo(function ControlPanel({
       } else if (key === 'restore' && rstEnabled) {
         steps.push({ name: 'restore', params: { denoise: dn, deblur: db } });
       } else if (key === 'skin_retouch' && skinEnabled) {
-        steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail, texture_amount: skinTexAmt, texture_scale: skinTexScale } });
+        steps.push({ name: 'skin_retouch', params: { strength: skinStr, detail_size: skinDetail, texture_amount: skinTexAmt, texture_scale: skinTexScale, feather: overrides.skinFeather ?? skinFeather } });
       } else if (key === 'skin_tone' && toneEnabled) {
-        steps.push({ name: 'skin_tone', params: { strength: toneStr } });
+        steps.push({ name: 'skin_tone', params: { strength: toneStr, feather: overrides.skinFeather ?? skinFeather } });
       }
     }
     // Mask overlay always last (topmost Z-axis)
     if (maskOverlay) {
-      steps.push({ name: 'skin_mask_overlay', params: { opacity: maskOpacity } });
+      steps.push({ name: 'skin_mask_overlay', params: { opacity: maskOpacity, feather: overrides.skinFeather ?? skinFeather } });
     }
     onPipeline(steps);
   }, [pipelineOrder, resizeEnabled, reflectionEnabled, restoreEnabled, skinRetouchEnabled, skinToneEnabled,
       resizeW, resizeH, denoiseStrength, quality, strength, use4bit,
       denoiseLevel, deblurLevel, skinRetouchStrength, skinDetailSize, skinTextureAmount, skinTextureScale,
-      skinMaskOverlay, skinMaskOpacity, skinToneStrength, onPipeline]);
+      skinFeather, skinMaskOverlay, skinMaskOpacity, skinToneStrength, onPipeline]);
 
   // Reset dimensions when original size changes (image switch)
   useEffect(() => {
@@ -375,6 +376,16 @@ export default memo(function ControlPanel({
           runPipeline({ skinRetouchEnabled: next, order: newOrder });
         }}
       >
+        <SliderRow
+          label="Feather"
+          value={skinFeather}
+          min={0} max={1} step={0.05}
+          onChange={(v) => {
+            setSkinFeather(v);
+            if (skinRetouchEnabled || skinToneEnabled || skinMaskOverlay) runPipeline({ skinFeather: v });
+          }}
+          displayValue={`${Math.round(skinFeather * 100)}%`}
+        />
         <SliderRow
           label="Blemish"
           value={skinRetouchStrength}
