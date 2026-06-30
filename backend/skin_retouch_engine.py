@@ -40,39 +40,6 @@ class SkinRetouchEngine:
         self._parsing_model.to(self._get_device())
         self._parsing_model.eval()
 
-    def _get_face_hull_mask(self, labels):
-        """Get convex hull mask of all face-related labels from SegFormer output.
-
-        Uses the convex hull of all non-background, non-hair, non-cloth pixels
-        to define the face contour. Fills gaps where skin was misclassified as
-        background (common on profile faces).
-
-        Returns a binary uint8 mask (H, W) where 255 = inside face hull.
-        Returns None if no face pixels detected.
-        """
-        import cv2
-
-        # All face-related labels (everything that's part of a face)
-        # Excludes: 0=background, 13=hair, 14=hat, 18=cloth
-        face_labels = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17}
-        face_pixels = np.isin(labels, list(face_labels)).astype(np.uint8) * 255
-
-        if face_pixels.sum() == 0:
-            return None
-
-        # Find contours of all face regions
-        contours, _ = cv2.findContours(face_pixels, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None
-
-        # Build convex hull from all face contour points combined
-        all_points = np.vstack(contours)
-        hull = cv2.convexHull(all_points)
-
-        mask = np.zeros_like(face_pixels)
-        cv2.fillConvexPoly(mask, hull, 255)
-        return mask
-
     def _ensure_gfpgan(self):
         """Load GFPGAN face restoration model."""
         if self._gfpgan is not None:
@@ -149,27 +116,19 @@ class SkinRetouchEngine:
             nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
             mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
 
-        # Convex hull fallback: fill gaps in parsing mask on profiles
-        # Uses hull of all face labels to define face boundary, then fills
-        # any background pixels inside the hull as skin
+        # Morphological closing: fill small holes/gaps inside skin regions
+        # This fixes patchy detection on profiles without extending beyond face
+        short_edge = min(img.width, img.height)
+        close_k = max(15, int(short_edge * 0.04))
+        if close_k % 2 == 0:
+            close_k += 1
+        close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+
+        # Don't let closing bleed into non-face areas
         non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
-        face_hull = self._get_face_hull_mask(labels)
-        if face_hull is not None:
-            # Fill gaps: inside hull AND not a hard-blocked label
-            fillable = (face_hull > 0) & (hard_block == 0)
-            mask = np.where(fillable, np.maximum(mask, face_hull), mask)
-
-        # Expand skin mask slightly to catch missed temples/forehead on profiles
-        short_edge = min(img.width, img.height)
-        expand_k = max(3, int(short_edge * 0.01))
-        if expand_k % 2 == 0:
-            expand_k += 1
-        expand_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (expand_k, expand_k))
-        mask_expanded = cv2.dilate(mask, expand_kernel, iterations=1)
-
-        # But don't expand into non-face areas (hair, background, clothes, etc.)
-        mask = np.where(hard_block > 0, mask, mask_expanded)
+        mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
         # Protect eye socket / eyelid area: dilate eye+brow regions and subtract
         eye_brow_labels = {4, 5, 6, 7}
