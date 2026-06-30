@@ -139,10 +139,12 @@ class SkinRetouchEngine:
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
+        # Grayscale for nostril + beard detection
+        gray = np.array(img.convert('L')).astype(np.float32)
+
         # Exclude nostrils: only the actual dark nostril holes
         nose_region = (labels == 10)
         if nose_region.any():
-            gray = np.array(img.convert('L'))
             nose_pixels = gray[nose_region]
             # Only exclude very dark pixels (actual holes, not nose sides)
             nostril_thresh = np.percentile(nose_pixels, 10)  # darkest 10% only
@@ -176,6 +178,79 @@ class SkinRetouchEngine:
         mouth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mouth_k, mouth_k))
         mouth_protection = cv2.dilate(mouth_mask, mouth_kernel, iterations=1)
         mask = np.where(mouth_protection > 0, 0, mask).astype(np.uint8)
+
+        # Beard/mustache detection: detect dark, textured skin in lower face region
+        # BiSeNet doesn't have a beard label — facial hair is classified as skin(1)
+        # Strategy: in the lower face (below nose), identify pixels that are
+        # significantly darker and have high local texture compared to upper face skin
+
+        # Find nose vertical extent to define "lower face"
+        nose_rows = np.where(labels == 10)
+        mouth_rows = np.where(np.isin(labels, list(mouth_labels)))
+        if len(nose_rows[0]) > 0:
+            nose_bottom = int(np.percentile(nose_rows[0], 90))
+            # Lower face: from nose bottom to chin (bottom of skin region)
+            skin_rows = np.where(labels == 1)
+            if len(skin_rows[0]) > 0:
+                chin_bottom = int(np.percentile(skin_rows[0], 98))
+            else:
+                chin_bottom = img.height
+
+            # Define lower face zone (below nose, includes beard/mustache area)
+            lower_face = np.zeros((img.height, img.width), dtype=bool)
+            lower_face[nose_bottom:chin_bottom, :] = True
+            # Only consider pixels currently in the skin mask
+            lower_skin = lower_face & (mask > 0)
+
+            # Upper face skin reference (forehead/cheeks above nose mid)
+            nose_top = int(np.percentile(nose_rows[0], 10))
+            upper_face = np.zeros((img.height, img.width), dtype=bool)
+            upper_face[:nose_top, :] = True
+            upper_skin = upper_face & (mask > 0)
+
+            if upper_skin.any() and lower_skin.any():
+                # Reference brightness: upper face skin median
+                upper_brightness = np.median(gray[upper_skin])
+
+                # Local texture: standard deviation in small neighborhood
+                from scipy.ndimage import uniform_filter
+                local_mean = uniform_filter(gray, size=max(5, int(short_edge * 0.015)))
+                local_sq_mean = uniform_filter(gray ** 2, size=max(5, int(short_edge * 0.015)))
+                local_var = np.maximum(local_sq_mean - local_mean ** 2, 0)
+                local_std = np.sqrt(local_var)
+
+                # Texture threshold: upper face skin has some texture too
+                upper_texture_ref = np.median(local_std[upper_skin])
+                texture_threshold = upper_texture_ref * 2.0  # beard has much higher texture
+
+                # Darkness threshold: beard is darker than cheek/forehead skin
+                darkness_threshold = upper_brightness * 0.75  # 25% darker than reference
+
+                # Detect beard: lower face pixels that are both dark AND textured
+                is_dark = gray < darkness_threshold
+                is_textured = local_std > texture_threshold
+                beard_candidate = lower_skin & is_dark & is_textured
+
+                # Require spatial coherence: small isolated dark pixels aren't beard
+                if beard_candidate.any():
+                    beard_u8 = beard_candidate.astype(np.uint8) * 255
+                    # Opening to remove noise, then closing to fill gaps
+                    bk = max(3, int(short_edge * 0.008))
+                    if bk % 2 == 0:
+                        bk += 1
+                    b_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (bk, bk))
+                    beard_u8 = cv2.morphologyEx(beard_u8, cv2.MORPH_OPEN, b_kernel)
+                    beard_u8 = cv2.morphologyEx(beard_u8, cv2.MORPH_CLOSE, b_kernel)
+                    # Only keep if substantial area (>2% of lower face skin)
+                    lower_skin_area = lower_skin.sum()
+                    beard_area = (beard_u8 > 0).sum()
+                    if beard_area > lower_skin_area * 0.02:
+                        # Dilate slightly to cover edges of beard
+                        bd_k = max(3, int(short_edge * 0.01))
+                        if bd_k % 2 == 0:
+                            bd_k += 1
+                        beard_u8 = cv2.dilate(beard_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (bd_k, bd_k)))
+                        mask = np.where(beard_u8 > 0, 0, mask).astype(np.uint8)
 
         # Feather edges: controlled by feather param (0=hard, 1=very soft)
         # Range: 0.8% to 5% of short edge
