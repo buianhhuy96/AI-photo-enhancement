@@ -141,8 +141,8 @@ export default memo(function ControlPanel({
   const [skinRetouchEnabled, setSkinRetouchEnabled] = useState(false);
   const [skinRetouchStrength, setSkinRetouchStrength] = useState(0.5);
   const [skinDetailSize, setSkinDetailSize] = useState(0.05);
-  const [skinTextureAmount, setSkinTextureAmount] = useState(0.5);
-  const [skinTextureScale, setSkinTextureScale] = useState(0.5);
+  const [skinTextureAmount, setSkinTextureAmount] = useState(0);
+  const [skinTextureScale, setSkinTextureScale] = useState(0);
   const [skinToneEnabled, setSkinToneEnabled] = useState(false);
   const [skinToneStrength, setSkinToneStrength] = useState(0.5);
   const [pipelineOrder, setPipelineOrder] = useState([]);

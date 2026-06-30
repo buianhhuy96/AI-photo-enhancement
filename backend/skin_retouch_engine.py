@@ -217,8 +217,8 @@ class SkinRetouchEngine:
         # Add synthetic skin texture (Gaussian noise + blur to mimic pore scale)
         L_textured = L_smooth_base
         if texture_amount > 0:
-            # Target amplitude after blur: 3-15 L units (visible range on 0-255 scale)
-            target_amplitude = 3.0 + texture_amount * 12.0
+            # Target amplitude after blur: 2-9 L units (visible range on 0-255 scale)
+            target_amplitude = 2.0 + texture_amount * 7.0
 
             # Pore blur radius: texture_scale controls grain size
             # 0.0 = fine grain (~1px), 1.0 = coarse pores (~1% of short edge)
