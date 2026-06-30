@@ -97,8 +97,24 @@ class SkinRetouchEngine:
         # 6=l_brow, 7=r_brow, 8=l_ear, 9=r_ear, 10=mouth, 11=u_lip,
         # 12=l_lip, 13=hair, 14=hat, 15=ear_r (earring), 16=neck_l (necklace),
         # 17=neck, 18=cloth
-        skin_labels = {1, 17}  # skin + neck (NOT nose - user reported unwanted)
+        skin_labels = {1, 2, 17}  # skin + nose + neck
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
+
+        # Exclude nostrils: dark holes inside nose region
+        nose_region = (labels == 2)
+        if nose_region.any():
+            gray = np.array(img.convert('L'))
+            # Adaptive threshold: nostrils are much darker than surrounding nose skin
+            nose_pixels = gray[nose_region]
+            nostril_thresh = np.percentile(nose_pixels, 15)  # darkest 15%
+            nostrils = nose_region & (gray <= nostril_thresh)
+            # Dilate nostril mask slightly so edges are excluded too
+            nostril_u8 = nostrils.astype(np.uint8) * 255
+            nk = max(3, int(min(img.width, img.height) * 0.005))
+            if nk % 2 == 0:
+                nk += 1
+            nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
+            mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
 
         # Expand skin mask slightly to catch missed temples/forehead on profiles
         short_edge = min(img.width, img.height)
@@ -110,7 +126,7 @@ class SkinRetouchEngine:
 
         # But don't expand into non-face areas (hair, background, clothes, etc.)
         # Only allow expansion into background (0) that's adjacent to existing skin
-        non_face_hard = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
+        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, mask, mask_expanded)
 
