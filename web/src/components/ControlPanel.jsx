@@ -386,6 +386,7 @@ export default memo(function ControlPanel({
           }}
           displayValue={`${Math.round(skinFeather * 100)}%`}
         />
+        <div style={{ borderTop: '1px solid #555', margin: '6px 0' }} />
         <SliderRow
           label="Blemish"
           value={skinRetouchStrength}
@@ -406,6 +407,7 @@ export default memo(function ControlPanel({
           }}
           displayValue={`${(skinDetailSize * 100).toFixed(1)}%`}
         />
+        <div style={{ borderTop: '1px solid #555', margin: '6px 0' }} />
         <SliderRow
           label="Texture"
           value={skinTextureAmount}
