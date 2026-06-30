@@ -12,18 +12,10 @@ if "torchvision.transforms.functional_tensor" not in sys.modules:
 class SkinRetouchEngine:
     """Remove blemishes using GFPGAN to regenerate skin, masked by face parsing."""
 
-    # MediaPipe Face Mesh face oval landmark indices (contour around the face)
-    _FACE_OVAL_IDX = [
-        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-        397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-        172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109,
-    ]
-
     def __init__(self):
         self._parsing_model = None
         self._parsing_processor = None
         self._gfpgan = None
-        self._face_mesh = None
         self._device = None
         self._mask_cache_key = None
         self._mask_cache = None
@@ -48,47 +40,37 @@ class SkinRetouchEngine:
         self._parsing_model.to(self._get_device())
         self._parsing_model.eval()
 
-    def _ensure_face_mesh(self):
-        """Load MediaPipe Face Mesh for face contour detection."""
-        if self._face_mesh is not None:
-            return
-        try:
-            import mediapipe as mp
-            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=True,
-                max_num_faces=4,
-                refine_landmarks=False,
-                min_detection_confidence=0.3,
-            )
-        except ImportError:
-            print("[skin_retouch] WARNING: mediapipe not installed — face contour fallback disabled. "
-                  "Install with: pip install mediapipe")
-            self._face_mesh = "unavailable"
+    def _get_face_hull_mask(self, labels):
+        """Get convex hull mask of all face-related labels from SegFormer output.
 
-    def _get_face_contour_mask(self, img):
-        """Get face skin contour mask from MediaPipe Face Mesh.
+        Uses the convex hull of all non-background, non-hair, non-cloth pixels
+        to define the face contour. Fills gaps where skin was misclassified as
+        background (common on profile faces).
 
-        Returns a binary uint8 mask (H, W) where 255 = inside face oval.
-        Returns None if no face detected.
+        Returns a binary uint8 mask (H, W) where 255 = inside face hull.
+        Returns None if no face pixels detected.
         """
         import cv2
-        self._ensure_face_mesh()
-        if self._face_mesh == "unavailable":
-            return None
-        img_array = np.array(img)
-        h, w = img_array.shape[:2]
-        results = self._face_mesh.process(img_array)
-        if not results.multi_face_landmarks:
+
+        # All face-related labels (everything that's part of a face)
+        # Excludes: 0=background, 13=hair, 14=hat, 18=cloth
+        face_labels = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17}
+        face_pixels = np.isin(labels, list(face_labels)).astype(np.uint8) * 255
+
+        if face_pixels.sum() == 0:
             return None
 
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for face_landmarks in results.multi_face_landmarks:
-            pts = []
-            for idx in self._FACE_OVAL_IDX:
-                lm = face_landmarks.landmark[idx]
-                pts.append((int(lm.x * w), int(lm.y * h)))
-            pts = np.array(pts, dtype=np.int32)
-            cv2.fillConvexPoly(mask, pts, 255)
+        # Find contours of all face regions
+        contours, _ = cv2.findContours(face_pixels, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        # Build convex hull from all face contour points combined
+        all_points = np.vstack(contours)
+        hull = cv2.convexHull(all_points)
+
+        mask = np.zeros_like(face_pixels)
+        cv2.fillConvexPoly(mask, hull, 255)
         return mask
 
     def _ensure_gfpgan(self):
@@ -167,16 +149,16 @@ class SkinRetouchEngine:
             nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
             mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
 
-        # Non-face labels that should never be overwritten
+        # Convex hull fallback: fill gaps in parsing mask on profiles
+        # Uses hull of all face labels to define face boundary, then fills
+        # any background pixels inside the hull as skin
         non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
-
-        # MediaPipe Face Mesh fallback: fill gaps in parsing mask on profiles
-        face_contour = self._get_face_contour_mask(img)
-        if face_contour is not None:
-            # Face contour fills gaps where parsing missed skin (background=0)
-            fillable = (face_contour > 0) & (hard_block == 0)
-            mask = np.where(fillable, np.maximum(mask, face_contour), mask)
+        face_hull = self._get_face_hull_mask(labels)
+        if face_hull is not None:
+            # Fill gaps: inside hull AND not a hard-blocked label
+            fillable = (face_hull > 0) & (hard_block == 0)
+            mask = np.where(fillable, np.maximum(mask, face_hull), mask)
 
         # Expand skin mask slightly to catch missed temples/forehead on profiles
         short_edge = min(img.width, img.height)
