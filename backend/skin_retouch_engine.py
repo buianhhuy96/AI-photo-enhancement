@@ -100,24 +100,9 @@ class SkinRetouchEngine:
         skin_labels = {1, 2, 17}  # skin + nose + neck
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
-        # Exclude nostrils: dark holes inside nose region
-        nose_region = (labels == 2)
-        if nose_region.any():
-            gray = np.array(img.convert('L'))
-            # Adaptive threshold: nostrils are much darker than surrounding nose skin
-            nose_pixels = gray[nose_region]
-            nostril_thresh = np.percentile(nose_pixels, 15)  # darkest 15%
-            nostrils = nose_region & (gray <= nostril_thresh)
-            # Dilate nostril mask slightly so edges are excluded too
-            nostril_u8 = nostrils.astype(np.uint8) * 255
-            nk = max(3, int(min(img.width, img.height) * 0.005))
-            if nk % 2 == 0:
-                nk += 1
-            nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
-            mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
-
         # Morphological closing: fill small holes/gaps inside skin regions
         # This fixes patchy detection on profiles without extending beyond face
+        # Must happen BEFORE nostril/mouth exclusion so closing doesn't refill them
         short_edge = min(img.width, img.height)
         close_k = max(15, int(short_edge * 0.04))
         if close_k % 2 == 0:
@@ -130,6 +115,20 @@ class SkinRetouchEngine:
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, 0, mask).astype(np.uint8)
 
+        # Exclude nostrils: dark holes inside nose region
+        nose_region = (labels == 2)
+        if nose_region.any():
+            gray = np.array(img.convert('L'))
+            nose_pixels = gray[nose_region]
+            nostril_thresh = np.percentile(nose_pixels, 25)  # darkest 25%
+            nostrils = nose_region & (gray <= nostril_thresh)
+            nostril_u8 = nostrils.astype(np.uint8) * 255
+            nk = max(5, int(short_edge * 0.01))
+            if nk % 2 == 0:
+                nk += 1
+            nostril_u8 = cv2.dilate(nostril_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (nk, nk)))
+            mask = np.where(nostril_u8 > 0, 0, mask).astype(np.uint8)
+
         # Protect eye socket / eyelid area: dilate eye+brow regions and subtract
         eye_brow_labels = {4, 5, 6, 7}
         eye_brow_mask = np.isin(labels, list(eye_brow_labels)).astype(np.uint8) * 255
@@ -141,6 +140,16 @@ class SkinRetouchEngine:
         eye_protection = cv2.dilate(eye_brow_mask, protect_kernel, iterations=1)
         # Subtract protection zone from skin mask
         mask = np.where(eye_protection > 0, 0, mask).astype(np.uint8)
+
+        # Protect mouth/mustache area: dilate mouth+lip regions and subtract
+        mouth_labels = {10, 11, 12}  # mouth, upper lip, lower lip
+        mouth_mask = np.isin(labels, list(mouth_labels)).astype(np.uint8) * 255
+        mouth_k = max(5, int(short_edge * 0.02))
+        if mouth_k % 2 == 0:
+            mouth_k += 1
+        mouth_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (mouth_k, mouth_k))
+        mouth_protection = cv2.dilate(mouth_mask, mouth_kernel, iterations=1)
+        mask = np.where(mouth_protection > 0, 0, mask).astype(np.uint8)
 
         # Smooth edges for natural blending
         blur_k = max(7, int(short_edge * 0.008))
