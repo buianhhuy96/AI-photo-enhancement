@@ -92,11 +92,12 @@ class SkinRetouchEngine:
         )
         labels = upsampled.argmax(dim=1)[0].cpu().numpy()
 
-        # CelebAMask-HQ labels for jonathandinu/face-parsing:
-        # 0=background, 1=skin, 2=nose, 3=glasses, 4=l_eye, 5=r_eye,
-        # 6=l_brow, 7=r_brow, 8=l_ear, 9=r_ear, 10=earring, 11=mouth,
-        # 12=u_lip, 13=l_lip, 14=neck, 15=necklace, 16=cloth, 17=hair, 18=hat
-        skin_labels = {1, 2, 14}
+        # jonathandinu/face-parsing labels (from model card):
+        # 0=background, 1=skin, 2=nose, 3=eye_g (glasses), 4=l_eye, 5=r_eye,
+        # 6=l_brow, 7=r_brow, 8=l_ear, 9=r_ear, 10=mouth, 11=u_lip,
+        # 12=l_lip, 13=hair, 14=hat, 15=ear_r (earring), 16=neck_l (necklace),
+        # 17=neck, 18=cloth
+        skin_labels = {1, 17}  # skin + neck (NOT nose - user reported unwanted)
         mask = np.isin(labels, list(skin_labels)).astype(np.uint8) * 255
 
         # Expand skin mask slightly to catch missed temples/forehead on profiles
@@ -109,7 +110,7 @@ class SkinRetouchEngine:
 
         # But don't expand into non-face areas (hair, background, clothes, etc.)
         # Only allow expansion into background (0) that's adjacent to existing skin
-        non_face_hard = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18}
+        non_face_hard = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
         hard_block = np.isin(labels, list(non_face_hard)).astype(np.uint8) * 255
         mask = np.where(hard_block > 0, mask, mask_expanded)
 
